@@ -851,7 +851,7 @@ class FrontController(RedditController):
         nsfw = u"nsfw:0" if not (article.over_18 or article._nsfw.findall(article.title)) else u""
         query = u"(and %s timestamp:%s..%s %s)" % (query, start, end, nsfw)
         q = g.search.SearchQuery(query, raw_sort="-text_relevance",
-                        syntax="cloudsearch")
+                        syntax=g.search.NATIVE_SYNTAX)
         pane = self._search(q, num=num, after=after, reverse=reverse,
                             count=count)[2]
 

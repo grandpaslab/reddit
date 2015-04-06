@@ -25,24 +25,41 @@ from datetime import datetime, timedelta
 import functools
 import httplib
 import json
-from lxml import etree
-from pylons import g, c
 import re
 import time
 import urllib
 
 import l2cs
+from lxml import etree
+from pylons import g, c
 
 from r2.lib import amqp, filters
 from r2.lib.db.operators import desc
 from r2.lib.db.sorts import epoch_seconds
 import r2.lib.utils as r2utils
-from r2.models import (Account, Link, Subreddit, Thing, All, DefaultSR,
-                       MultiReddit, DomainSR, Friends, ModContribSR,
-                       FakeSubreddit, NotFound)
 from r2.lib.providers.search import SearchProvider
-from r2.lib.providers.search.base import safe_get, InvalidQuery, SearchHTTPError, \
-        LinkFields, SubredditFields, Results
+from r2.lib.providers.search.base import (
+        InvalidQuery, 
+        LinkFields, 
+        Results,
+        safe_get, 
+        SearchHTTPError, 
+        SubredditFields, 
+    )
+from r2.models import (
+        Account, 
+        All, 
+        DefaultSR,
+        DomainSR, 
+        FakeSubreddit, 
+        Friends, 
+        Link, 
+        ModContribSR,
+        MultiReddit, 
+        NotFound
+        Subreddit, 
+        Thing, 
+    )
 
 _TIMEOUT = 5 # seconds for http requests to cloudsearch
 _CHUNK_SIZE = 4000000 # Approx. 4 MB, to stay under the 5MB limit
@@ -768,6 +785,8 @@ class CloudSearchSubredditSearchQuery(CloudSearchQuery):
 
 class CloudSearchProvider(SearchProvider):
     '''Provider implementation: wrap it all up as a SearchProvider'''
+
+    NATIVE_SYNTAX = "cloudsearch"
     
     InvalidQuery = (InvalidQuery,)
     SearchException = (SearchHTTPError,)

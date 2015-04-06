@@ -20,49 +20,57 @@
 # Inc. All Rights Reserved.
 ###############################################################################
 
-from datetime import datetime, timedelta
 import cPickle as pickle
+from datetime import datetime, timedelta
 import functools
 import httplib
-import urllib
 import json
 import time
-import re
-
+import urllib
 
 from lxml import etree
-from r2.lib import amqp, filters
-from r2.lib.db.operators import desc
-from r2.lib.db.sorts import epoch_seconds
-from r2.lib.configparse import ConfigValue
-import r2.lib.utils as r2utils
-from r2.models import (Account, Link, Subreddit, All, DefaultSR,
-                       MultiReddit, DomainSR, Friends, ModContribSR,
-                       FakeSubreddit, NotFound)
 from pylons import g, c
 
-from r2.lib.providers.search.base import safe_get, InvalidQuery, SearchHTTPError, \
-        LinkFields, SubredditFields, Results
+from r2.lib import amqp, filters
+from r2.lib.configparse import ConfigValue
+from r2.lib.db.operators import desc
+from r2.lib.db.sorts import epoch_seconds
 from r2.lib.providers.search import SearchProvider
+from r2.lib.providers.search.base import (
+        InvalidQuery, 
+        LinkFields, 
+        Results,
+        safe_get, 
+        safe_xml_str,
+        SearchHTTPError, 
+        SubredditFields, 
+    )
+import r2.lib.utils as r2utils
+from r2.models import (
+        Account, 
+        All, 
+        DefaultSR,
+        DomainSR, 
+        FakeSubreddit, 
+        Friends, 
+        Link, 
+        ModContribSR,
+        MultiReddit, 
+        NotFound,
+        Subreddit, 
+    )
 
 
 _CHUNK_SIZE = 4000000 # Approx. 4 MB, to stay under the 5MB limit
-_VERSION_OFFSET = 13257906857
-ILLEGAL_XML = re.compile(u'[\x00-\x08\x0b\x0c\x0e-\x1F\uD800-\uDFFF\uFFFE\uFFFF]')
-
-
 _SEARCH = "/solr/select?"
-INVALID_QUERY_CODES = ('CS-UnknownFieldInMatchExpression',
-                       'CS-IncorrectFieldTypeInMatchExpression',
-                       'CS-InvalidMatchSetExpression',)
 DEFAULT_FACETS = {"reddit": {"count":20}}
 
 WARNING_XPATH = ".//lst[@name='error']/str[@name='warning']"
 STATUS_XPATH = ".//lst/int[@name='status']"
 DOC_API = 'http://%s:%s' % (g.solr_doc_host, g.solr_port)
 
-SORTS_DICT = {'-text_relevance': 'score desc',
-              'relevance': 'score desc'}
+SORTS_DICT = {'text_relevance': 'score',
+              'relevance': 'score'}
 
 def basic_query(query=None, bq=None, faceting=None, size=1000,
                 start=0, rank="", return_fields=None, record_stats=False,
@@ -74,7 +82,7 @@ def basic_query(query=None, bq=None, faceting=None, size=1000,
     path = _encode_query(query, faceting, size, start, rank, return_fields)
     timer = None
     if record_stats:
-        timer = g.stats.get_timer("cloudsearch_timer")
+        timer = g.stats.get_timer("solrsearch_timer")
         timer.start()
     connection = httplib.HTTPConnection(search_api, g.solr_port)
     try:
@@ -85,15 +93,14 @@ def basic_query(query=None, bq=None, faceting=None, size=1000,
             g.stats.action_count("event.search_query", resp.status)
         if resp.status >= 300:
             try:
-                reasons = json.loads(response)
+                response_json = json.loads(response)
             except ValueError:
                 pass
             else:
-                messages = reasons.get("messages", [])
-                for message in messages:
-                    if message['code'] in INVALID_QUERY_CODES:
-                        raise InvalidQuery(resp.status, resp.reason, message,
-                                           path, reasons)
+                if 'error' in response_json:
+                    message = response_json['error'].get('msg', 'Unknown error')
+                    raise InvalidQuery(resp.status, resp.reason, message,
+                                       path, response_json)
             raise SearchHTTPError(resp.status, resp.reason, path,
                                        response)
     finally:
@@ -135,8 +142,6 @@ class SolrSearchQuery(object):
                  faceting=None, recent=None):
         if syntax is None:
             syntax = self.default_syntax
-        elif(syntax == 'cloudsearch'):
-            syntax = 'solr'
         elif syntax not in self.known_syntaxes:
             raise ValueError("Unknown search syntax: %s" % syntax)
         self.query = filters._force_unicode(query or u'')
@@ -292,9 +297,7 @@ class LinkSearchQuery(SolrSearchQuery):
         elif sr == Friends:
             if not c.user_is_loggedin or not c.user.friends:
                 return None
-            # The query limit is roughly 8k bytes. Limit to 200 friends to
-            # avoid getting too close to that limit
-            friend_ids = c.user.friends[:200]
+            friend_ids = c.user.friends
             friends = ["author_fullname:'%s'" %
                        Account._fullname_from_id36(r2utils.to36(id_))
                        for id_ in friend_ids]
@@ -356,16 +359,13 @@ def _encode_query(query, faceting, size, start, rank, return_fields):
 
 class SolrSearchUploader(object):
     
-    def __init__(self, solr_host=None, solr_port=None, fullnames=None, version_offset=_VERSION_OFFSET):
+    def __init__(self, solr_host=None, solr_port=None, fullnames=None):
         self.solr_host = solr_host or g.solr_doc_host
         self.solr_port = solr_port or g.solr_port
-        self._version_offset = version_offset
         self.fullnames = fullnames    
 
     def add_xml(self, thing):
-        from r2.lib.providers.search.base import safe_xml_str
 
-        #add = etree.Element("add", id=thing._fullname)
         doc = etree.Element("doc")
         field = etree.SubElement(doc, "field", name='id')
         field.text = thing._fullname
@@ -457,9 +457,9 @@ class SolrSearchUploader(object):
                     for w in response.find(WARNING_XPATH) or []:
                         warnings.append(w.text)
 
-            g.stats.simple_event("cloudsearch.uploads.adds", delta=adds)
-            g.stats.simple_event("cloudsearch.uploads.deletes", delta=deletes)
-            g.stats.simple_event("cloudsearch.uploads.warnings",
+            g.stats.simple_event("solrsearch.uploads.adds", delta=adds)
+            g.stats.simple_event("solrsearch.uploads.deletes", delta=deletes)
+            g.stats.simple_event("solrsearch.uploads.warnings",
                     delta=len(warnings))
 
             if not quiet:
@@ -526,7 +526,7 @@ def chunk_xml(xml, depth=0):
             yield chunk
 
 
-@g.stats.amqp_processor('cloudsearch_q')
+@g.stats.amqp_processor('solrsearch_q')
 def _run_changed(msgs, chan):
     '''Consume the cloudsearch_changes queue, and print reporting information
     on how long it took and how many remain
@@ -545,13 +545,13 @@ def _run_changed(msgs, chan):
 
     link_time = link_uploader.inject()
     subreddit_time = subreddit_uploader.inject()
-    cloudsearch_time = link_time + subreddit_time
+    solrsearch_time = link_time + subreddit_time
 
     totaltime = (datetime.now(g.tz) - start).total_seconds()
 
     print ("%s: %d messages in %.2fs seconds (%.2fs secs waiting on "
            "solr); %d duplicates, %s remaining)" %
-           (start, len(changed), totaltime, cloudsearch_time,
+           (start, len(changed), totaltime, solrsearch_time,
             len(changed) - len(link_fns | sr_fns),
             msgs[-1].delivery_info.get('message_count', 'unknown')))
 
@@ -559,8 +559,8 @@ def _run_changed(msgs, chan):
 class SolrLinkUploader(SolrSearchUploader):
     types = (Link,)
 
-    def __init__(self, solr_host=None, solr_port=None, fullnames=None, version_offset=_VERSION_OFFSET):
-        super(SolrLinkUploader, self).__init__(fullnames=fullnames, version_offset=version_offset)
+    def __init__(self, solr_host=None, solr_port=None, fullnames=None):
+        super(SolrLinkUploader, self).__init__(fullnames=fullnames)
         self.accounts = {}
         self.srs = {}
 
@@ -613,7 +613,7 @@ def _progress_key(item):
     return "%s/%s" % (item._id, item._date)
 
 
-_REBUILD_INDEX_CACHE_KEY = "cloudsearch_cursor_%s"
+_REBUILD_INDEX_CACHE_KEY = "solrsearch_cursor_%s"
 
 
 def rebuild_link_index(start_at=None, sleeptime=1, cls=Link,
@@ -681,8 +681,13 @@ def test_run_srs(*sr_names):
 
 
 def translate_raw_sort(sort):
-    return SORTS_DICT.get(sort, 'score desc') 
-
+    '''translate from cloudsearch syntax'''
+    sort_dir = ''
+    if sort.startswith('-'):
+        sort.pop(0)
+        sort_dir = ' desc'
+    sort = SORTS_DICT.get(sort, sort) 
+    return '%s%s' % (sort, sort_dir)
 
 class SolrSearchProvider(SearchProvider):
     '''Provider implementation: wrap it all up as a SearchProvider
@@ -720,6 +725,8 @@ class SolrSearchProvider(SearchProvider):
             "solr_core",
         ],
     }    
+
+    NATIVE_SYNTAX = "solr"
 
     InvalidQuery = (InvalidQuery,)
     SearchException = (SearchHTTPError,)
