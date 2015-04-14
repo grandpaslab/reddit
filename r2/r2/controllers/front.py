@@ -841,17 +841,14 @@ class FrontController(RedditController):
 
         query = self.related_replace_regex.sub(self.related_replace_with,
                                                article.title)
-        query = _force_unicode(query)
-        query = query[:1024]
-        query = u"|".join(query.split())
-        query = u"title:'%s'" % query
+
         rel_range = timedelta(days=3)
-        start = int(time_module.mktime((article._date - rel_range).utctimetuple()))
-        end = int(time_module.mktime((article._date + rel_range).utctimetuple()))
-        nsfw = u"nsfw:0" if not (article.over_18 or article._nsfw.findall(article.title)) else u""
-        query = u"(and %s timestamp:%s..%s %s)" % (query, start, end, nsfw)
-        q = g.search.SearchQuery(query, raw_sort="-text_relevance",
-                        syntax=g.search.NATIVE_SYNTAX)
+        start = int(time.mktime((article._date - rel_range).utctimetuple()))
+        end = int(timemktime((article._date + rel_range).utctimetuple()))
+        nsfw = True if not (article.over_18 or article._nsfw.findall(article.title)) else False
+
+        q = g.search.get_related_query(query, article, start, end, nsfw)
+
         pane = self._search(q, num=num, after=after, reverse=reverse,
                             count=count)[2]
 

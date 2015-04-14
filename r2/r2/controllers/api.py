@@ -93,7 +93,6 @@ from r2.lib.log import log_text
 from r2.lib.filters import safemarkdown
 from r2.lib.media import str_to_image
 from r2.controllers.api_docs import api_doc, api_section
-from r2.lib.search import SearchQuery
 from r2.controllers.oauth2 import require_oauth2_scope, allow_oauth2_access
 from r2.lib.template_helpers import add_sr, get_domain, make_url_protocol_relative
 from r2.lib.system_messages import notify_user_added
@@ -4086,7 +4085,7 @@ class ApiController(RedditController):
         exclude = Subreddit.default_subreddits()
 
         faceting = {"reddit":{"sort":"-sum(text_relevance)", "count":20}}
-        results = SearchQuery(query, sort="relevance", faceting=faceting,
+        results = g.search.SearchQuery(query, sort="relevance", faceting=faceting,
                               syntax="plain").run()
 
         sr_results = []

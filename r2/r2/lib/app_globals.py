@@ -279,6 +279,7 @@ class Globals(object):
             'nerds_email',
             'community_email',
             'smtp_server',
+            'search_provider',
         ],
 
         ConfigValue.choice(ONE=CL_ONE, QUORUM=CL_QUORUM): [
@@ -942,3 +943,15 @@ class Globals(object):
         here.
         """
         pass
+
+    @property
+    def search(self):
+        if getattr(self, 'search_provider_', None):
+            return self.search_provider_
+        self.search_provider_ = getattr(self, 'sp', select_provider(
+            self.config,
+            self.pkg_resources_working_set,
+            "r2.provider.search",
+            self.search_provider,
+        ))
+        return  self.search_provider_    

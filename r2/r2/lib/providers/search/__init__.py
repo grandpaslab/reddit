@@ -42,3 +42,6 @@ class SearchProvider(object):
 
     def run_changed(self):
         return NotImplementedError
+
+    def get_related_query(self):
+        return NotImplementedError

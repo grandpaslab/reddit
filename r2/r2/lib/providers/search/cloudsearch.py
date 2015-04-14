@@ -56,7 +56,7 @@ from r2.models import (
         Link, 
         ModContribSR,
         MultiReddit, 
-        NotFound
+        NotFound,
         Subreddit, 
         Thing, 
     )
@@ -786,8 +786,6 @@ class CloudSearchSubredditSearchQuery(CloudSearchQuery):
 class CloudSearchProvider(SearchProvider):
     '''Provider implementation: wrap it all up as a SearchProvider'''
 
-    NATIVE_SYNTAX = "cloudsearch"
-    
     InvalidQuery = (InvalidQuery,)
     SearchException = (SearchHTTPError,)
 
@@ -806,3 +804,16 @@ class CloudSearchProvider(SearchProvider):
         amqp.handle_items('cloudsearch_changes', _run_changed, min_size=min_size,
                           limit=limit, drain=drain, sleep_time=sleep_time,
                           verbose=verbose)
+    
+    def get_related_query(query, article, start, end, nsfw):
+        '''build related query in cloudsearch syntax'''
+
+        query = query[:1024]
+        query = u"|".join(query.split())
+        query = u"title:'%s'" % query
+        nsfw = nsfw and u"nsfw:0" or u""
+        query = u"(and %s timestamp:%s..%s %s)" % (query, start, end, nsfw)
+        return g.search.SearchQuery(query, 
+                                    raw_sort="-text_relevance",
+                                    syntax="cloudsearch")
+

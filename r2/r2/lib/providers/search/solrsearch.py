@@ -231,11 +231,11 @@ class SolrSearchQuery(object):
 
 class LinkSearchQuery(SolrSearchQuery):
     search_api = g.solr_search_host
-    sorts = {'relevance': 'score',
-             'hot': 'hot2',
-             'top': 'top',
-             'new': 'timestamp',
-             'comments': 'num_comments',
+    sorts = {'relevance': 'score desc',
+             'hot': 'max(hot/45000.0, 1.0) desc',
+             'top': 'top desc',
+             'new': 'timestamp desc',
+             'comments': 'num_comments desc',
              }
     sorts_menu_mapping = {'relevance': 1,
                           'hot': 2,
@@ -331,9 +331,7 @@ def _encode_query(query, faceting, size, start, rank, return_fields):
     params["defType"] = "edismax"
     params["size"] = size
     params["start"] = start
-    if rank == 'activity':
-        params['sort'] = 'activity desc'
-    elif rank: 
+    if rank: 
         params['sort'] = rank.strip().lower()
         if not params['sort'].split()[-1] in ['asc', 'desc']:
             params['sort'] = '%s desc' % params['sort']
@@ -345,7 +343,9 @@ def _encode_query(query, faceting, size, start, rank, return_fields):
         for facet, options in faceting.iteritems():
             facet_limit.append(options.get("count", 20))
             if "sort" in options:
-                facet_sort.append('%s desc' % options["sort"])
+                if not options['sort'].split()[-1] in ['asc', 'desc']:
+                    options['sort'] = '%s desc' % options['sort']
+                facet_sort.append(options["sort"])
         params["facet.limit"] = ",".join([str(l) for l in facet_limit])
         params["facet.sort"] = ",".join(facet_sort)
         params["facet.sort"] = params["facet.sort"] or 'score desc' 
@@ -726,8 +726,6 @@ class SolrSearchProvider(SearchProvider):
         ],
     }    
 
-    NATIVE_SYNTAX = "solr"
-
     InvalidQuery = (InvalidQuery,)
     SearchException = (SearchHTTPError,)
 
@@ -747,3 +745,13 @@ class SolrSearchProvider(SearchProvider):
                           limit=limit, drain=drain, sleep_time=sleep_time,
                           verbose=verbose)
 
+    def get_related_query(query, article, start, end, nsfw):
+        '''build related query in solr syntax'''
+
+        query = u"|".join(query.split())
+        query = u"title:'%s'" % query
+        nsfw = nsfw and u"nsfw:0" or u""
+        query = u"(and %s timestamp:%s..%s %s)" % (query, start, end, nsfw)
+        return g.search.SearchQuery(query, 
+                                    raw_sort="-text_relevance",
+                                    syntax="solr")
