@@ -811,7 +811,7 @@ class CloudSearchProvider(SearchProvider):
 
     sorts = LinkSearchQuery.sorts_menu_mapping
 
-    def run_changed(drain=False, min_size=int(getattr(g, 'SOLR_MIN_BATCH', 500)), limit=1000, sleep_time=10, 
+    def run_changed(self, drain=False, min_size=int(getattr(g, 'SOLR_MIN_BATCH', 500)), limit=1000, sleep_time=10, 
             use_safe_get=False, verbose=False):
         '''Run by `cron` (through `paster run`) on a schedule to send Things to Cloud
         '''
@@ -821,7 +821,7 @@ class CloudSearchProvider(SearchProvider):
                           limit=limit, drain=drain, sleep_time=sleep_time,
                           verbose=verbose)
     
-    def get_related_query(query, article, start, end, nsfw):
+    def get_related_query(self, query, article, start, end, nsfw):
         '''build related query in cloudsearch syntax'''
 
         query = query[:1024]

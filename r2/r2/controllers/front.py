@@ -842,17 +842,12 @@ class FrontController(RedditController):
 
         query = self.related_replace_regex.sub(self.related_replace_with,
                                                article.title)
-        query = _force_unicode(query)
-        query = query[:1024]
-        query = u"|".join(query.split())
-        query = u"title:'%s'" % query
         rel_range = timedelta(days=3)
-        start = int(time_module.mktime((article._date - rel_range).utctimetuple()))
-        end = int(time_module.mktime((article._date + rel_range).utctimetuple()))
-        nsfw = u"nsfw:0" if not article.is_nsfw else u""
-        query = u"(and %s timestamp:%s..%s %s)" % (query, start, end, nsfw)
-        q = g.search.SearchQuery(query, raw_sort="-text_relevance", faceting={},
-                        syntax="cloudsearch")
+        start = int(time.mktime((article._date - rel_range).utctimetuple()))
+        end = int(timemktime((article._date + rel_range).utctimetuple()))
+        nsfw = not bool(article.over_18 or article._nsfw.findall(article.title))                         
+        q = g.search.get_related_query(query, article, start, end, nsfw)
+
         pane = self._search(q, num=num, after=after, reverse=reverse,
                             count=count)[2]
 
@@ -1257,7 +1252,7 @@ class FrontController(RedditController):
                           "check the details by signing into your account "
                           "at:")
             vendor_url = "https://www.paypal.com/us"
-        elif vendor in {"coinbase", "stripe"}:  # Pending vendors
+        elif vendor in ["coinbase", "stripe"]:  # Pending vendors
             claim_msg = _("Thanks for buying reddit gold! Your transaction is "
                           "being processed. If you have any questions please "
                           "email us at %(gold_email)s")

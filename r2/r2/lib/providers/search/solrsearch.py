@@ -58,6 +58,7 @@ from r2.models import (
         MultiReddit, 
         NotFound,
         Subreddit, 
+        Thing,
     )
 
 
@@ -452,6 +453,17 @@ class SolrSearchUploader(object):
         batch.extend(deletes)
         return self.send_documents(batch)
 
+    def batch_lookups(self):                                                                                            
+        try:                                                                                                            
+            self.things = Thing._by_fullname(self.fullnames, data=True,                                                 
+                                             return_dict=False)                                                         
+        except NotFound:                                                                                                
+            if self.use_safe_get:                                                                                       
+                self.things = safe_get(Thing._by_fullname, self.fullnames,                                              
+                                       data=True, return_dict=False)                                                    
+            else:                                                                                                       
+                raise 
+
     def xml_from_things(self):
         '''Generate a <batch> XML tree to send to solr for
         adding/updating/deleting the given things
@@ -790,7 +802,7 @@ class SolrSearchProvider(SearchProvider):
     
     sorts = LinkSearchQuery.sorts_menu_mapping
 
-    def run_changed(drain=False, min_size=int(getattr(g, 'solr_min_batch', 500)), limit=1000, sleep_time=10, 
+    def run_changed(self, drain=False, min_size=int(getattr(g, 'solr_min_batch', 500)), limit=1000, sleep_time=10, 
             use_safe_get=False, verbose=False):
         '''Run by `cron` (through `paster run`) on a schedule to send Things to Solr
         '''
@@ -800,7 +812,7 @@ class SolrSearchProvider(SearchProvider):
                           limit=limit, drain=drain, sleep_time=sleep_time,
                           verbose=verbose)
 
-    def get_related_query(query, article, start, end, nsfw):
+    def get_related_query(self, query, article, start, end, nsfw):
         '''build related query in solr syntax'''
 
         query = u"|".join(query.split())
