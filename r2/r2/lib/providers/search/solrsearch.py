@@ -145,6 +145,7 @@ class SolrSearchQuery(object):
             syntax = self.default_syntax
         elif syntax not in self.known_syntaxes:
             raise ValueError("Unknown search syntax: %s" % syntax)
+        self.bq = None
         self.query = filters._force_unicode(query or u'')
         self.converted_data = None
         self.syntax = syntax
