@@ -420,6 +420,18 @@ class SolrSearchUploader(object):
         self.solr_port = solr_port or g.solr_port
         self.fullnames = fullnames    
 
+    @classmethod
+    def desired_fullnames(cls, items):
+        '''Pull fullnames that represent instances of 'types' out of items'''
+
+        fullnames = set()
+        type_ids = [type_._type_id for type_ in cls.types]
+        for item in items:
+            item_type = r2utils.decompose_fullname(item['fullname'])[1]
+            if item_type in type_ids:
+                fullnames.add(item['fullname'])
+        return fullnames
+
     def add_xml(self, thing):
 
         doc = etree.Element("doc")
