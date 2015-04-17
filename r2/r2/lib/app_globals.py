@@ -388,8 +388,6 @@ class Globals(object):
         self.plugins = PluginLoader(self.pkg_resources_working_set,
                                     self.config.get("plugins", []))
 
-        import pdb
-        pdb.set_trace()
         self.stats = Stats(self.config.get('statsd_addr'),
                            self.config.get('statsd_sample_rate'))
         self.startup_timer = self.stats.get_timer("app_startup")
