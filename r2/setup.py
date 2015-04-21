@@ -127,6 +127,6 @@ setup(
     http = r2.lib.providers.auth.http:HttpAuthenticationProvider
     [r2.provider.search]
     cloudsearch = r2.lib.providers.search.cloudsearch:CloudSearchProvider
-    solr = r2.lib.providers.search.solrsearch:SolrSearchProvider
+    solr = r2.lib.providers.search.solr:SolrSearchProvider
     """,
 )

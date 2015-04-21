@@ -63,12 +63,10 @@ from r2.models import (
 
 
 _CHUNK_SIZE = 4000000 # Approx. 4 MB, to stay under the 5MB limit
-_SEARCH = "/solr/select?"
 DEFAULT_FACETS = {"reddit": {"count":20}}
 
 WARNING_XPATH = ".//lst[@name='error']/str[@name='warning']"
 STATUS_XPATH = ".//lst/int[@name='status']"
-DOC_API = 'http://%s:%s' % (g.solr_doc_host, g.solr_port)
 
 SORTS_DICT = {'text_relevance': 'score',
               'relevance': 'score'}
@@ -160,7 +158,7 @@ class SolrSearchQuery(object):
         # rank / rank expressions
         self._sort = sort
         if raw_sort:
-            self.sort = translate_raw_sort(raw_sort)
+            self.sort = _translate_raw_sort(raw_sort)
         elif sort:
             self.sort = self.sorts.get(sort)
         else:
@@ -384,7 +382,7 @@ def _encode_query(query, faceting, size, start, rank, return_fields):
     params = {}
     params["q"] = query
     params["wt"] = "json"
-    params["defType"] = "edismax"
+    #params["defType"] = "edismax"
     params["size"] = size
     params["start"] = start
     if rank: 
@@ -408,8 +406,11 @@ def _encode_query(query, faceting, size, start, rank, return_fields):
     if return_fields:
         params["qf"] = ",".join(return_fields)
     encoded_query = urllib.urlencode(params)
-    path = '/solr/%s/select?%s' % \
-        (getattr(g, 'solr_core', 'collection1'), encoded_query)
+    if getattr(g, 'solr_version', '1').startswith('4'):
+        path = '/solr/%s/select?%s' % \
+            (getattr(g, 'solr_core', 'collection1'), encoded_query)
+    else:
+        path = '/solr/select?%s' %  encoded_query
     return path    
 
 
@@ -557,7 +558,7 @@ class SolrSearchUploader(object):
         
         Raises SearchHTTPError if the endpoint indicates a failure
         '''
-        core = getattr(g, 'solr_coreE', 'collection1') 
+        core = getattr(g, 'solr_core', 'collection1') 
         responses = []
         connection = httplib.HTTPConnection(self.solr_host, self.solr_port)
         chunker = chunk_xml(docs)
@@ -566,8 +567,12 @@ class SolrSearchUploader(object):
         try:
             for data in chunker:
                 # HTTPLib calculates Content-Length header automatically
-                connection.request('POST', "/solr/%s/update/" % core,
-                                   data, headers)
+                if getattr(g, 'solr_version', '1').startswith('4'):
+                    connection.request('POST', "/solr/%s/update/" % core,
+                                       data, headers)
+                else:     
+                    connection.request('POST', "/solr/update/",
+                                       data, headers)
                 response = connection.getresponse()
                 if 200 <= response.status < 300:
                     responses.append(response.read())
@@ -695,7 +700,7 @@ def _progress_key(item):
 _REBUILD_INDEX_CACHE_KEY = "solrsearch_cursor_%s"
 
 
-def rebuild_link_index(start_at=None, sleeptime=1, cls=Link,
+def _rebuild_link_index(start_at=None, sleeptime=1, cls=Link,
                        uploader=SolrLinkUploader, estimate=50000000, 
                        chunk_size=1000):
     cache_key = _REBUILD_INDEX_CACHE_KEY % uploader.__name__.lower()
@@ -735,7 +740,7 @@ def rebuild_link_index(start_at=None, sleeptime=1, cls=Link,
         time.sleep(sleeptime)
 
 
-rebuild_subreddit_index = functools.partial(rebuild_link_index,
+rebuild_subreddit_index = functools.partial(_rebuild_link_index,
                                             cls=Subreddit,
                                             uploader=SolrSubredditUploader,
                                             estimate=200000,
@@ -759,7 +764,7 @@ def test_run_srs(*sr_names):
     return uploader.inject()
 
 
-def translate_raw_sort(sort):
+def _translate_raw_sort(sort):
     '''translate from cloudsearch syntax'''
     sort_dir = ''
     if sort.startswith('-'):
@@ -772,24 +777,31 @@ class SolrSearchProvider(SearchProvider):
     '''Provider implementation: wrap it all up as a SearchProvider
     
     example config:
-
-    # endpoint for link search e.g. http://localhost:8983
-    solr_search_host = is-forums-sf-04v
-    # endpoint for link upload
-    solr_doc_host = is-forums-sf-04v
-    # endpoint for subreddit search
-    solr_subreddit_search_host = is-forums-sf-04v
-    # endpoint for subreddit upload
-    solr_subreddit_doc_host = is-forums-sf-04v
-    # solr port
-    solr_port = 8983
-    # solr core name
-    solr_core = reddit1
-    # default batch size is 500
+    # version of solr service--versions 1.x and 4.x have been tested. 
+    # only the major version number matters here
+    solr_version = 1
+    # solr search service hostname or IP
+    solr_search_host = 127.0.0.1
+    # hostname or IP for link upload
+    solr_doc_host = 127.0.0.1
+    # hostname or IP for subreddit search
+    solr_subreddit_search_host = 127.0.0.1
+    # hostname or IP subreddit upload
+    solr_subreddit_doc_host = 127.0.0.1
+    # solr port (assumed same on all hosts)
+    solr_port = 8080
+    # solr4 core name (not used with Solr 1.x)
+    solr_core = collection1
+    # default batch size 
     # limit is hard-coded to 1000
-    solr_min_batch = 1
-    
+    # set to 1 for testing
+    solr_min_batch = 500
+    # optionally, you may select your solr query parser here
+    # see documentation for your version of Solr
+    solr_query_parser = 
     '''
+
+    SOLR_VERSION = 1
   
     config = {
         ConfigValue.int: [
@@ -802,6 +814,7 @@ class SolrSearchProvider(SearchProvider):
             "solr_subreddit_search_host",
             "solr_subreddit_doc_host",
             "solr_core",
+            "solr_version",
         ],
     }    
 
@@ -834,3 +847,9 @@ class SolrSearchProvider(SearchProvider):
         return g.search.SearchQuery(query, 
                                     raw_sort="-text_relevance",
                                     syntax="solr")
+
+    def rebuild_link_index(self, start_at=None, sleeptime=1, cls=Link,
+                           uploader=SolrLinkUploader, estimate=50000000, 
+                           chunk_size=1000):
+         _rebuild_link_index(start_at, sleeptime, cls, uploader, estimate,  
+                            chunk_size)
