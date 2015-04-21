@@ -13,7 +13,7 @@ sudo ln -s /path/to/reddit/solr/schema.xml /usr/share/solr/conf
 sudo service tomcat6 start
 ```
 
-You should now be able to connect to solar at http://127.0.0.1:8080
+You should now be able to connect to Solr at http://127.0.0.1:8080
 
 To configure reddit to use Solr for search, set the search provider to **solr**
 in your .ini file:
