@@ -851,7 +851,7 @@ class FrontController(RedditController):
         pane = self._search(q, num=num, after=after, reverse=reverse,
                             count=count)[2]
 
-        return LinkInfoPage(link=article, content=pane
+        return LinkInfoPage(link=article, content=pane,
                             page_classes=['related-page'],
                             subtitle=_('related')).render()
 
