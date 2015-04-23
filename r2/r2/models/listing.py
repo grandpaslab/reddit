@@ -35,19 +35,22 @@ from r2.lib.db import operators
 
 from collections import namedtuple
 from copy import deepcopy, copy
+import time
+
 
 class Listing(object):
     # class used in Javascript to manage these objects
     _js_cls = "Listing"
 
     def __init__(self, builder, nextprev = True, next_link = True,
-                 prev_link = True, **kw):
+                 prev_link = True, params = None, **kw):
         self.builder = builder
         self.nextprev = nextprev
         self.next_link = True
         self.prev_link = True
         self.next = None
         self.prev = None
+        self.params = params or request.GET.copy()
         self._max_num = 1
 
     @property
@@ -79,15 +82,15 @@ class Listing(object):
         self.before = None
 
         if self.nextprev and self.prev_link and prev and bcount > 1:
-            p = request.GET.copy()
+            p = self.params.copy()
             p.update({'after':None, 'before':prev._fullname, 'count':bcount})
             self.before = prev._fullname
             self.prev = (request.path + utils.query_string(p))
-            p_first = request.GET.copy()
+            p_first = self.params.copy()
             p_first.update({'after':None, 'before':None, 'count':None})
             self.first = (request.path + utils.query_string(p_first))
         if self.nextprev and self.next_link and next:
-            p = request.GET.copy()
+            p = self.params.copy()
             p.update({'after':next._fullname, 'before':None, 'count':acount})
             self.after = next._fullname
             self.next = (request.path + utils.query_string(p))
@@ -294,6 +297,7 @@ class SearchListing(LinkListing):
     def listing(self, *args, **kwargs):
         wrapped = LinkListing.listing(self, *args, **kwargs)
         self.subreddit_facets = self.builder.subreddit_facets
+        self.timing = time.time() - self.builder.start_time
         return wrapped
 
 

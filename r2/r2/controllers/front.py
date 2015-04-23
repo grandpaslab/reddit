@@ -851,7 +851,7 @@ class FrontController(RedditController):
         pane = self._search(q, num=num, after=after, reverse=reverse,
                             count=count)[2]
 
-        return LinkInfoPage(link=article, content=pane,
+        return LinkInfoPage(link=article, content=pane
                             page_classes=['related-page'],
                             subtitle=_('related')).render()
 
@@ -907,16 +907,19 @@ class FrontController(RedditController):
         else:
             include_over18 = True
 
+        if feature.is_enabled('subreddit_relevancy') and sort == 'relevance':
+            sort = 'rel1'
+
         q = g.search.SubredditSearchQuery(query, sort=sort, faceting={},
                                  include_over18=include_over18)
+        content = self._search(q, num=num, reverse=reverse,
+                               after=after, count=count,
+                               skip_deleted_authors=False)
 
-        results, etime, spane = self._search(q, num=num, reverse=reverse,
-                                             after=after, count=count,
-                                             skip_deleted_authors=False)
-
-        res = SubredditsPage(content=spane,
+        res = SubredditsPage(content=content,
                              prev_search=query,
                              elapsed_time=etime,
+                             page_classes=['subreddits-page'],
                              # update if we ever add sorts
                              search_params={},
                              title=_("search results"),
@@ -966,16 +969,39 @@ class FrontController(RedditController):
         else:
             faceting = None
 
-        try:
-            cleanup_message = None
+        result_type = request.GET.get('type')
+        sr_num = 0
+
+        # combined results on first page only, html site only
+        if c.render_style == 'html' and feature.is_enabled('subreddit_search'):
+            if after is None and not restrict_sr and not result_type:
+                # hardcoded to 5 subreddits (or fewer)
+                sr_num = min(5, int(num / 5))
+                num = num - sr_num
+            elif result_type == 'sr':
+                sr_num = num
+                num = 0
+                restrict_sr = False
+
+        content = None
+        subreddits = None
+        cleanup_message = None
+        converted_data = None
+        subreddit_facets = None
+
+        if num > 0:
             try:
                 q = g.search.SearchQuery(query, site, sort=sort, faceting=faceting,
                                 include_over18=include_over18,
                                 recent=recent, syntax=syntax)
-                results, etime, spane = self._search(q, num=num, after=after,
-                                                     reverse=reverse,
-                                                     count=count)
+                content = self._search(q, num=num, after=after, reverse=reverse,
+                                       count=count)
+                converted_data = q.converted_data
+                subreddit_facets = content.subreddit_facets
+
             except g.search.InvalidQuery:
+                g.stats.simple_event('cloudsearch.error.invalidquery')
+
                 # Clean the search of characters that might be causing the
                 # InvalidQuery exception. If the cleaned search boils down
                 # to an empty string, the search code is expected to bail
@@ -986,10 +1012,11 @@ class FrontController(RedditController):
                 q = g.search.SearchQuery(cleaned, site, sort=sort, faceting=faceting,
                                 include_over18=include_over18,
                                 recent=recent)
-                results, etime, spane = self._search(q, num=num,
-                                                     after=after,
-                                                     reverse=reverse,
-                                                     count=count)
+                content = self._search(q, num=num, after=after, reverse=reverse,
+                                       count=count)
+                converted_data = q.converted_data
+                subreddit_facets = content.subreddit_facets
+
                 if cleaned:
                     cleanup_message = strings.invalid_search_query % {
                                                         "clean_query": cleaned
@@ -1001,27 +1028,37 @@ class FrontController(RedditController):
                 else:
                     cleanup_message = strings.completely_invalid_search_query
 
-            check_cheating("search")
-            res = SearchPage(_('search results'), query, etime,
-                             content=spane,
-                             nav_menus=[SearchSortMenu(default=sort),
-                                        TimeMenu(default=recent)],
-                             search_params=dict(sort=sort, t=recent),
-                             infotext=cleanup_message,
-                             simple=False, site=c.site,
-                             restrict_sr=restrict_sr,
-                             syntax=syntax,
-                             converted_data=q.converted_data,
-                             facets=results.subreddit_facets,
-                             sort=sort,
-                             recent=recent,
-                             ).render()
+        # extra search request for subreddit results
+        if sr_num > 0:
+            sr_q = SubredditSearchQuery(query, sort='relevance', faceting={},
+                                        include_over18=include_over18)
+            subreddits = self._search(sr_q, num=sr_num, reverse=reverse,
+                                      after=after, count=count, type='sr',
+                                      skip_deleted_authors=False)
+            if is_api() and not content:
+                content = subreddits
+                subreddits = None
 
-            return res
-        except g.search.SearchException + (socket.error,) as e:
-            return self.search_fail(e)
+        check_cheating("search")
+        res = SearchPage(_('search results'), query,
+                         content=content,
+                         subreddits=subreddits,
+                         nav_menus=[SearchSortMenu(default=sort),
+                                    TimeMenu(default=recent)],
+                         search_params=dict(sort=sort, t=recent),
+                         infotext=cleanup_message,
+                         simple=False, site=c.site,
+                         restrict_sr=restrict_sr,
+                         syntax=syntax,
+                         converted_data=converted_data,
+                         facets=subreddit_facets,
+                         sort=sort,
+                         recent=recent,
+                         ).render()
 
-    def _search(self, query_obj, num, after, reverse, count=0,
+        return res
+
+    def _search(self, query_obj, num, after, reverse, count=0, type=None,
                 skip_deleted_authors=True):
         """Helper function for interfacing with search.  Basically a
            thin wrapper for SearchBuilder."""
@@ -1035,17 +1072,18 @@ class FrontController(RedditController):
             g.stats.event_count("listing.invalid_after", "search")
             self.abort403()
 
-        listing = SearchListing(builder, show_nums=True)
+        params = request.GET.copy()
+        if type:
+            params['type'] = type
 
-        # have to do it in two steps since total_num and timing are only
-        # computed after fetch_more
+        listing = SearchListing(builder, show_nums=True, params=params)
+
         try:
             res = listing.listing()
         except g.search.SearchException + (socket.error,) as e:
             return self.search_fail(e)
-        timing = time_module.time() - builder.start_time
 
-        return builder.results, timing, res
+        return res
 
     @validate(VAdmin(),
               comment=VCommentByID('comment_id'))
@@ -1444,7 +1482,11 @@ class FormsController(RedditController):
         content = None
         infotext = None
         if not location or location == 'options':
-            content = PrefOptions(done=request.GET.get('done'))
+            content = PrefOptions(
+                done=request.GET.get('done'),
+                error_style_override=request.GET.get('error_style_override'),
+                generic_error=request.GET.get('generic_error'),
+            )
         elif location == 'update':
             if verified:
                 infotext = strings.email_verified

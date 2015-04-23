@@ -1691,8 +1691,18 @@ class RedditController(OAuth2ResourceController):
         #check whether to allow custom styles
         c.allow_styles = True
         c.can_apply_styles = self.allow_stylesheets
-        #if the preference is set and we're not at a cname
-        if not c.user.pref_show_stylesheets and not c.cname:
+
+        # use override stylesheet if one exists and:
+        #   this page has no custom stylesheet
+        #   or the user disabled the stylesheet for this sr (indiv or global)
+        has_style_override = (c.user.pref_default_theme_sr and
+                feature.is_enabled('stylesheets_everywhere') and
+                Subreddit._by_name(c.user.pref_default_theme_sr).can_view(c.user))
+        sr_stylesheet_enabled = c.user.use_subreddit_style(c.site)
+
+        if (not sr_stylesheet_enabled and
+                not has_style_override and
+                not c.cname):
             c.can_apply_styles = False
         #if the site has a cname, but we're not using it
         elif c.site.domain and c.site.css_on_cname and not c.cname:
