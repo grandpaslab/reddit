@@ -946,12 +946,11 @@ class Globals(object):
 
     @property
     def search(self):
-        if getattr(self, 'search_provider_', None):
-            return self.search_provider_
-        self.search_provider_ = getattr(self, 'sp', select_provider(
-            self.config,
-            self.pkg_resources_working_set,
-            "r2.provider.search",
-            self.search_provider,
-        ))
+        self.search_provider_ = getattr(self, 'search_provider_', 
+                select_provider(self.config,
+                                self.pkg_resources_working_set,
+                                "r2.provider.search",
+                                self.search_provider,
+                                )
+            )
         return  self.search_provider_        
