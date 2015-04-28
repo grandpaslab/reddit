@@ -455,8 +455,8 @@ class Scraper(object):
                                       maxwidth=maxwidth,
                                       oembed_url=EMBEDLY_API_URL)
         
-        if urlparse.urlparse(url).hostname in g.known_image_domains and \
-            content_type and "text" in content_type and content:
+        if (urlparse.urlparse(url).hostname in g.known_image_domains and 
+            content_type and "text" in content_type and content):
             return _OembedScraper(url,
                                   True,
                                   autoplay=autoplay,
