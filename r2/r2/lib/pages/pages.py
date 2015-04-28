@@ -1724,12 +1724,6 @@ class CommentPane(Templated):
         )
 
     def __init__(self, article, sort, comment, context, num, **kw):
-        # keys: lang, num, can_reply, render_style
-        # disable: admin
-
-        timer = g.stats.get_timer("service_time.CommentPaneCache")
-        timer.start()
-
         from r2.models import CommentBuilder, NestedListing
         from r2.controllers.reddit_base import UnloggedUser
 
@@ -1740,50 +1734,72 @@ class CommentPane(Templated):
         self.max_depth = kw.get('max_depth')
         self.edits_visible = kw.get("edits_visible")
 
-        # don't cache on permalinks or contexts, and keep it to html
-        try_cache = not comment and not context and (c.render_style == "html")
-        self.can_reply = False
-        if c.user_is_admin:
-            try_cache = False
+        is_html = c.render_style == "html"
 
-        # don't cache if the current user is the author of the link
-        if c.user_is_loggedin and c.user._id == article.author_id:
-            try_cache = False
+        if is_html:
+            timer = g.stats.get_timer("service_time.CommentPaneCache")
+        else:
+            timer = g.stats.get_timer(
+                "service_time.CommentPaneCache.%s" % c.render_style)
+        timer.start()
 
-        if try_cache and c.user_is_loggedin:
+        try_cache = (
+            not comment and
+            not context and
+            is_html and
+            not c.user_is_admin and
+            not (c.user_is_loggedin and c.user._id == article.author_id)
+        )
+
+        if c.user_is_loggedin:
             sr = article.subreddit_slow
-            c.can_reply = self.can_reply = sr.can_comment(c.user)
+            can_reply = sr.can_comment(c.user)
+            self.can_reply = can_reply
+            c.can_reply = can_reply
             c.can_save = True
-            # don't cache if the current user can ban comments in the listing
-            try_cache = not sr.can_ban(c.user)
-            # don't cache for users with custom hide threshholds
-            try_cache &= (c.user.pref_min_comment_score ==
-                         Account._defaults["pref_min_comment_score"])
 
-        def renderer():
-            builder = CommentBuilder(article, sort, comment=comment,
-                                     context=context, num=num, **kw)
-            listing = NestedListing(builder, parent_name=article._fullname)
-            return listing.listing()
+            try_cache &= not bool(sr.can_ban(c.user))
 
-        # disable the cache if the user is the author of anything in the
-        # thread because of edit buttons etc.
-        my_listing = None
+            user_threshold = c.user.pref_min_comment_score
+            default_threshold = Account._defaults["pref_min_comment_score"]
+            try_cache &= user_threshold == default_threshold
+        else:
+            self.can_reply = False
+            c.can_reply = False
+            c.can_save = False
+
+        builder = CommentBuilder(
+            article, sort, comment=comment, context=context, num=num, **kw)
+
         if try_cache and c.user_is_loggedin:
-            my_listing = renderer()
-            for t in self.listing_iter(my_listing):
-                if getattr(t, "is_author", False):
+            builder._get_comments()
+            timer.intermediate("build_comments")
+            for comment in builder.comments:
+                if comment.author_id == c.user._id:
                     try_cache = False
                     break
 
-        timer.intermediate("try_cache")
-        cache_hit = False
-
-        if try_cache:
-            # try to fetch the comment tree from the cache
+        if not try_cache:
+            listing = NestedListing(builder, parent_name=article._fullname)
+            listing_for_user = listing.listing()
+            timer.intermediate("build_listing")
+            self.rendered = listing_for_user.render()
+            timer.intermediate("render_listing")
+        else:
+            g.log.debug("using comment page cache")
             key = self.cache_key()
             self.rendered = g.pagecache.get(key)
-            if not self.rendered:
+
+            if self.rendered:
+                cache_hit = True
+
+                if c.user_is_loggedin:
+                    # don't need the builder to make a listing so stop its timer
+                    builder.timer.stop("waiting")
+
+            else:
+                cache_hit = False
+
                 # spoof an unlogged in user
                 user = c.user
                 logged_in = c.user_is_loggedin
@@ -1796,20 +1812,29 @@ class CommentPane(Templated):
 
                     c.user_is_loggedin = False
 
-                    # render as if not logged in (but possibly with reply buttons)
-                    self.rendered = renderer().render()
+                    # make the comment listing. if the user is loggedin we
+                    # already made the builder retrieve/build the comment tree
+                    # and lookup the comments.
+                    listing = NestedListing(
+                        builder, parent_name=article._fullname)
+                    generic_listing = listing.listing()
+
+                    if logged_in:
+                        timer.intermediate("build_listing")
+                    else:
+                        timer.intermediate("build_comments_and_listing")
+
+                    self.rendered = generic_listing.render()
+                    timer.intermediate("render_listing")
                     g.pagecache.set(
                         key,
                         self.rendered,
                         time=g.commentpane_cache_time
                     )
-
                 finally:
                     # undo the spoofing
                     c.user = user
                     c.user_is_loggedin = logged_in
-            else:
-                cache_hit = True
 
             # figure out what needs to be updated on the listing
             if c.user_is_loggedin:
@@ -1818,7 +1843,13 @@ class CommentPane(Templated):
                 is_friend = set()
                 gildings = {}
                 saves = set()
-                for t in self.listing_iter(my_listing):
+
+                # wrap the comments so the builder will customize them for
+                # the loggedin user
+                wrapped_for_user = builder.wrap_items(builder.comments)
+                timer.intermediate("wrap_comments_for_user")
+
+                for t in wrapped_for_user:
                     if not hasattr(t, "likes"):
                         # this is for MoreComments and MoreRecursion
                         continue
@@ -1837,10 +1868,7 @@ class CommentPane(Templated):
                                               is_friend = is_friend,
                                               gildings = gildings,
                                               saves = saves).render()
-            g.log.debug("using comment page cache")
-        else:
-            my_listing = my_listing or renderer()
-            self.rendered = my_listing.render()
+                timer.intermediate("thingupdater")
 
         if try_cache:
             if cache_hit:

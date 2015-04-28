@@ -199,6 +199,8 @@ def add_trackers(items, sr):
         
         if item.third_party_tracking:
             item.third_party_tracking_url = item.third_party_tracking
+        if item.third_party_tracking_2:
+            item.third_party_tracking_url_2 = item.third_party_tracking_2
 
         # construct the click redirect url
         url = urllib.unquote(item.url.encode("utf-8"))
@@ -294,7 +296,8 @@ def new_campaign(link, dates, bid, cpm, target, priority, location):
 def free_campaign(link, campaign, user):
     auth_campaign(link, campaign, user, -1)
 
-def edit_campaign(link, campaign, dates, bid, cpm, target, priority, location):
+def edit_campaign(link, campaign, dates, bid, cpm, target, priority, location,
+                  platform='desktop', mobile_os=None):
     changed = {}
     if bid != campaign.bid:
          # if the bid amount changed, cancel any pending transactions
