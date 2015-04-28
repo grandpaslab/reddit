@@ -75,6 +75,7 @@ PREFS_VALIDATORS = dict(
     pref_hide_ads=VBoolean("hide_ads"),
     pref_show_trending=VBoolean("show_trending"),
     pref_highlight_new_comments=VBoolean("highlight_new_comments"),
+    pref_show_gold_expiration=VBoolean("show_gold_expiration"),
     pref_monitor_mentions=VBoolean("monitor_mentions"),
     pref_hide_locationbar=VBoolean("hide_locationbar"),
     pref_use_global_defaults=VBoolean("use_global_defaults"),
@@ -102,7 +103,7 @@ def filter_prefs(prefs, user):
     # replace stylesheet_override with other_theme if it doesn't exist
     if feature.is_enabled_for('stylesheets_everywhere', user):
         if not prefs["pref_default_theme_sr"]:
-            if prefs["pref_other_theme"]:
+            if prefs.get("pref_other_theme", False):
                 prefs["pref_default_theme_sr"] = prefs["pref_other_theme"]
 
     for pref_key in prefs.keys():
@@ -126,6 +127,7 @@ def filter_prefs(prefs, user):
     # don't update the hide_ads pref if they don't have gold
     if not user.gold:
         del prefs['pref_hide_ads']
+        del prefs['pref_show_gold_expiration']
 
     if not (user.gold or user.is_moderator_somewhere):
         prefs['pref_highlight_new_comments'] = True

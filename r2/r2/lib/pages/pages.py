@@ -1400,11 +1400,30 @@ class SearchPage(BoringPage):
                                    syntax=syntax, converted_data=converted_data,
                                    facets=facets, sort=sort, recent=recent)
         self.subreddits = subreddits
+
+        # generate the over18 redirect url for the current search if needed
+        if not c.over18 and feature.is_enabled('safe_search'):
+            u = UrlParser(add_sr('/search'))
+            if prev_search:
+                u.update_query(q=prev_search)
+            if restrict_sr:
+                u.update_query(restrict_sr='on')
+            u.update_query(**search_params)
+            u.update_query(over18='yes')
+            over18_url = u.unparse()
+            kw['nav_menus'].append(MenuLink(title=_('enable NSFW results'),
+                                            url=over18_url))
+
         BoringPage.__init__(self, pagename, robots='noindex', *a, **kw)
 
     def content(self):
         return self.content_stack((self.searchbar, self.infobar,
                                    self.nav_menu, self.subreddits, self._content))
+
+
+class MenuLink(Templated):
+    pass
+
 
 class TakedownPage(BoringPage):
     def __init__(self, link):
@@ -2100,25 +2119,30 @@ class SidebarModList(Templated):
 class ProfileBar(Templated):
     """Draws a right box for info about the user (karma, etc)"""
     def __init__(self, user):
-        Templated.__init__(self, user = user)
-        self.viewing_self = False
-        self.show_private_info = False
-
+        Templated.__init__(self, user=user)
         if c.user_is_loggedin:
             self.viewing_self = user._id == c.user._id
             self.show_private_info = self.viewing_self or c.user_is_admin
+        else:
+            self.viewing_self = False
+            self.show_private_info = False
+
+        self.show_users_gold_expiration = (self.show_private_info or
+            user.pref_show_gold_expiration)
+        if user.gold and self.show_users_gold_expiration:
+            gold_days_left = (user.gold_expiration -
+                              datetime.datetime.now(g.tz)).days
+
+            if gold_days_left < 1:
+                self.gold_remaining = _("less than a day")
+            else:
+                # Round remaining gold to number of days
+                precision = 60 * 60 * 24
+                self.gold_remaining = timeuntil(user.gold_expiration,
+                                                precision)
+
+        if c.user_is_loggedin:
             if user.gold and self.show_private_info:
-                gold_days_left = (user.gold_expiration -
-                                  datetime.datetime.now(g.tz)).days
-
-                if gold_days_left < 1:
-                    self.gold_remaining = _("less than a day")
-                else:
-                    # Round remaining gold to number of days
-                    precision = 60 * 60 * 24
-                    self.gold_remaining = timeuntil(user.gold_expiration,
-                                                    precision)
-
                 if user.has_paypal_subscription:
                     self.paypal_subscr_id = user.gold_subscr_id
                     self.paypal_url = paypal_subscription_url()
@@ -2938,6 +2962,19 @@ class SearchForm(Templated):
                            search_params=search_params, site=site,
                            simple=simple, restrict_sr=restrict_sr,
                            subreddit_search=subreddit_search, syntax=syntax)
+
+        # generate the over18 redirect url for the current search if needed
+        if not c.over18 and feature.is_enabled('safe_search'):
+            u = UrlParser(add_sr('/search'))
+            if prev_search:
+                u.update_query(q=prev_search)
+            if restrict_sr:
+                u.update_query(restrict_sr='on')
+            u.update_query(**search_params)
+            u.update_query(over18='yes')
+            self.over18_url = u.unparse()
+        else:
+            self.over18_url = None
 
 
 class SearchBar(Templated):

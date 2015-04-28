@@ -29,6 +29,7 @@ from r2.lib.template_helpers import get_domain
 from utils import string2js, read_http_date
 
 import re, hashlib
+from Cookie import CookieError
 from urllib import quote
 import urllib2
 import sys
@@ -69,6 +70,7 @@ class BaseController(WSGIController):
         pass
 
     def __before__(self):
+        self.fix_cookie_header()
         self.pre()
         self.try_pagecache()
 
@@ -135,6 +137,30 @@ class BaseController(WSGIController):
     def pre(self): pass
     def post(self): pass
 
+    def fix_cookie_header(self):
+        """
+        Detect and drop busted `Cookie` headers
+
+        We get all sorts of invalid `Cookie` headers. Just one example:
+
+            Cookie: fo,o=bar; expires=1;
+
+        Normally you'd do this in middleware, but `webob.cookie`'s API
+        is fairly volatile while `webob.request`'s isn't. It's easier to
+        do this once we've got a valid `Request` object.
+        """
+        try:
+            # Just accessing this will cause `webob` to attempt a parse,
+            # telling us if the header's broken.
+            request.cookies
+        except (CookieError, KeyError):
+            # Someone sent a janked up cookie header, and `webob` exploded.
+            # just pretend we didn't receive one at all.
+            cookie_val = request.environ.get('HTTP_COOKIE', '')
+            request.environ['HTTP_COOKIE'] = ''
+            g.log.warning("Cleared bad cookie header: %r" % cookie_val)
+            g.stats.simple_event("cookie.bad_cookie_header")
+
     def _get_action_handler(self, name=None, method=None):
         name = name or request.environ["pylons.routes_dict"]["action_name"]
         method = method or request.method
@@ -175,17 +201,16 @@ class BaseController(WSGIController):
             abort(400)
         return rv
 
-
     @classmethod
-    def intermediate_redirect(cls, form_path, sr_path=True):
+    def intermediate_redirect(cls, form_path, sr_path=True, fullpath=None):
         """
-        Generates a /login or /over18 redirect from the current
+        Generates a /login or /over18 redirect from the specified or current
         fullpath, after having properly reformated the path via
         format_output_url.  The reformatted original url is encoded
         and added as the "dest" parameter of the new url.
         """
         from r2.lib.template_helpers import add_sr
-        params = dict(dest=cls.format_output_url(request.fullurl))
+        params = dict(dest=cls.format_output_url(fullpath or request.fullurl))
         if c.extension == "widget" and request.GET.get("callback"):
             params['callback'] = request.GET.get("callback")
 
