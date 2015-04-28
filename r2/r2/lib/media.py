@@ -282,8 +282,6 @@ def _scrape_media(url, autoplay=False, maxwidth=600, force=False,
             media = mediaByURL.media
 
     # Otherwise, scrape it
-    import pdb
-    pdb.set_trace()
     if not media or not media.media_object or not media.thumbnail_url:
         g.log.warning("not_media==True")
         media_object = secure_media_object = None
@@ -458,8 +456,8 @@ class Scraper(object):
                                       maxwidth=maxwidth,
                                       oembed_url=EMBEDLY_API_URL)
         
-        if urlparse.urlparse(url).hostname in g.known_image_domains and \
-            content_type and "text" in content_type and content:
+        if (urlparse.urlparse(url).hostname in g.known_image_domains and 
+            content_type and "text" in content_type and content):
             return _OembedScraper(url,
                                   True,
                                   autoplay=autoplay,
