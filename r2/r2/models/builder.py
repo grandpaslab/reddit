@@ -31,6 +31,8 @@ import time
 from pylons import c, g, request
 from pylons.i18n import _
 
+from r2.config import feature
+from r2.config.extensions import API_TYPES, RSS_TYPES
 from r2.lib.comment_tree import (
     conversation,
     link_comments_and_sort,
@@ -538,6 +540,26 @@ class IDBuilder(QueryBuilder):
         return done, new_items
 
 
+class ActionBuilder(IDBuilder):
+    def init_query(self):
+        self.actions = {}
+        ids = []
+        for id, date, action in self.query:
+            ids.append(id)
+            self.actions[id] = action
+        self.query = ids
+
+        super(ActionBuilder, self).init_query()
+
+    def thing_lookup(self, names):
+        items = super(ActionBuilder, self).thing_lookup(names)
+
+        for item in items:
+            if item._fullname in self.actions:
+                item.action_type = self.actions[item._fullname]
+        return items
+
+
 class CampaignBuilder(IDBuilder):
     """Build on a list of PromoTuples."""
 
@@ -668,6 +690,7 @@ class SearchBuilder(IDBuilder):
         self.results = self.query.run()
         names = list(self.results.docs)
         self.total_num = self.results.hits
+        self.subreddit_facets = self.results.subreddit_facets
 
         after = self.after._fullname if self.after else None
 
@@ -687,8 +710,23 @@ class SearchBuilder(IDBuilder):
         elif (self.skip_deleted_authors and
               getattr(item, "author", None) and item.author._deleted):
             return False
+
+        # show NSFW to API and RSS users unless obey_over18=true
+        is_api_or_rss = (c.render_style in API_TYPES
+                         or c.render_style in RSS_TYPES)
+        if is_api_or_rss:
+            include_over18 = not c.obey_over18 or c.over18
+        elif feature.is_enabled('safe_search'):
+            include_over18 = c.over18
         else:
-            return True
+            include_over18 = True
+
+        is_nsfw = (item.over_18 or
+            (hasattr(item, 'subreddit') and item.subreddit.over_18))
+        if is_nsfw and not include_over18:
+            return False
+
+        return True
 
 class WikiRevisionBuilder(QueryBuilder):
     show_extended = True

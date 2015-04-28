@@ -528,10 +528,29 @@ def _get_submitted(user_id, sort, time):
 def get_submitted(user, sort, time):
     return _get_submitted(user._id, sort, time)
 
+
 def get_user_actions(user, sort, time):
-    return merge_results(get_comments(user, sort, time),
-                         get_submitted(user, sort, time),
-                         get_liked(user))
+    results = []
+    unique_ids = set()
+
+    # Order is important as a listing will only have the action_type of the
+    # first occurrance (aka: posts trump comments which trump likes)
+    actions_by_type = ((get_submitted(user, sort, time), 'submit'),
+                       (get_comments(user, sort, time), 'comment'),
+                       (get_liked(user), 'like'))
+
+    for cached_result, action_type in actions_by_type:
+        cached_result.fetch()
+        for thing in cached_result.data:
+            if thing[0] not in unique_ids:
+                results.append(thing + (action_type,))
+                unique_ids.add(thing[0])
+
+    comparator = ThingTupleComparator(actions_by_type[0][0])
+    results.sort(cmp=comparator)
+
+    return results
+
 
 def get_overview(user, sort, time):
     return merge_results(get_comments(user, sort, time),

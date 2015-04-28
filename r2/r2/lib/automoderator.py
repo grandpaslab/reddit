@@ -100,6 +100,7 @@ def replace_placeholders(string, data, matches):
             "{{kind}}": "comment",
             "{{title}}": data["link"].title,
         })
+        media_item = data["link"]
     elif isinstance(item, Link):
         replacements.update({
             "{{kind}}": "submission",
@@ -107,16 +108,17 @@ def replace_placeholders(string, data, matches):
             "{{title}}": item.title,
             "{{url}}": item.url,
         })
+        media_item = item
 
-        if item.media_object:
-            oembed = item.media_object.get("oembed")
-            if oembed:
-                replacements.update({
-                    "{{media_author}}": oembed.get("author_name", ""),
-                    "{{media_title}}": oembed.get("title", ""),
-                    "{{media_description}}": oembed.get("description", ""),
-                    "{{media_author_url}}": oembed.get("author_url", ""),
-                })
+    if media_item.media_object:
+        oembed = media_item.media_object.get("oembed")
+        if oembed:
+            replacements.update({
+                "{{media_author}}": oembed.get("author_name", ""),
+                "{{media_title}}": oembed.get("title", ""),
+                "{{media_description}}": oembed.get("description", ""),
+                "{{media_author_url}}": oembed.get("author_url", ""),
+            })
 
     for placeholder, replacement in replacements.iteritems():
         string = string.replace(placeholder, replacement)
@@ -210,10 +212,12 @@ class Ruleset(object):
                 if standard_rules is None:
                     continue
 
-                standard_values = standard_rules.get(standard_name, None)
+                standard_values = None
+                if isinstance(standard_name, basestring):
+                    standard_values = standard_rules.get(standard_name, None)
                 if not standard_values:
                     raise AutoModeratorSyntaxError(
-                        "Invalid standard: %s" % standard_name,
+                        "Invalid standard: `%s`" % standard_name,
                         yaml.dump(orig_values),
                     )
 
@@ -340,7 +344,7 @@ class RuleComponent(object):
             if value not in self.valid_values:
                 return False
         if self.valid_regex:
-            if not self.valid_regex.search(value):
+            if not self.valid_regex.search(str(value)):
                 return False
 
         return True
@@ -588,6 +592,11 @@ class RuleTarget(object):
     def parse_match_fields_key(self, key):
         """Parse a key defining a match against fields into its components."""
         matches = self._match_field_key_regex.match(key)
+        if not matches:
+            raise AutoModeratorSyntaxError(
+                "Invalid search check: `%s`" % key,
+                self.parent.yaml,
+            )
         parsed = {}
         name = matches.group(1)
 
@@ -682,22 +691,23 @@ class RuleTarget(object):
 
         return match_patterns
 
-    def item_has_necessary_data(self, item):
-        """Check whether the item has all data required by the conditions."""
+    @property
+    def needs_media_data(self):
+        """Whether the component requires data from the media embed."""
         if any(field.startswith("media_") for field in self.match_fields):
-            if not item.media_object:
-                return False
+            return True
 
-        if self.reports and not item.reported:
-            return False
+        # check if any of the fields that support placeholders have media ones
+        potential_placeholders = [self.report_reason]
+        if self.set_flair:
+            potential_placeholders.extend(self.set_flair.values())
+        if any(text and "{{media_" in text for text in potential_placeholders):
+            return True
 
-        return True
+        return False
 
     def check_item(self, item, data):
         """Return whether an item satisfies all of the defined conditions."""
-        if not self.item_has_necessary_data(item):
-            return False
-
         if not self.check_nonpattern_conditions(item, data):
             return False
 
@@ -1171,6 +1181,19 @@ class Rule(object):
         return False
 
     @property
+    def needs_media_data(self):
+        """Whether the rule requires data from the media embed."""
+        for attr in ("comment", "modmail", "message"):
+            text = getattr(self, attr, None)
+            if text and "{{media_" in text:
+                return True
+
+        if any(comp.needs_media_data for comp in self.targets.values()):
+            return True
+
+        return False
+
+    @property
     def matches(self):
         return self.targets["base"].matches
 
@@ -1241,6 +1264,11 @@ class Rule(object):
                     ban_info.get("unbanner") != ACCOUNT.name):
                 return False
 
+        if self.needs_media_data:
+            if isinstance(item, Link) and not item.media_object:
+                return False
+            elif isinstance(item, Comment) and not data["link"].media_object:
+                return False
 
         return True
 

@@ -55,6 +55,7 @@ from r2.models import (
     Random,
     RandomNSFW,
     RandomSubscription,
+    StylesheetsEverywhere,
     Sub,
     SubSR,
     Subreddit,
@@ -274,7 +275,7 @@ class Reddit(Templated):
             self.canonical_link = u.unparse()
         # Generate a mobile link for Google.
         u = UrlParser(request.fullpath)
-        u.switch_subdomain_by_extension('compact')
+        u.switch_subdomain_by_extension('mobile')
         self.mobile_link = u.unparse()
 
         if self.show_infobar:
@@ -363,7 +364,32 @@ class Reddit(Templated):
         )
 
         self.toolbars = self.build_toolbars()
-        self.subreddit_stylesheet_url = self.get_subreddit_stylesheet_url(c.site)
+
+        has_style_override = (c.user.pref_default_theme_sr and
+                feature.is_enabled('stylesheets_everywhere') and
+                c.user.pref_enable_default_themes)
+        # if there is no style or the style is disabled for this subreddit
+        self.no_sr_styles = (isinstance(c.site, DefaultSR) or
+            (not self.get_subreddit_stylesheet_url(c.site) and not c.site.header) or
+            (c.user and not c.user.use_subreddit_style(c.site)))
+
+        self.default_theme_sr = DefaultSR()
+        # use override stylesheet if they have custom styles disabled or
+        # this subreddit has no custom stylesheet (or is the front page)
+        if self.no_sr_styles:
+            self.subreddit_stylesheet_url = self.get_subreddit_stylesheet_url(
+                self.default_theme_sr)
+        else:
+            self.subreddit_stylesheet_url = self.get_subreddit_stylesheet_url(c.site)
+
+        if has_style_override and self.no_sr_styles:
+            sr = Subreddit._by_name(c.user.pref_default_theme_sr)
+            # make sure they can still view their override subreddit
+            if sr.can_view(c.user) and sr.stylesheet_url:
+                self.subreddit_stylesheet_url = self.get_subreddit_stylesheet_url(sr)
+                if c.can_apply_styles and c.allow_styles and sr.header:
+                    self.default_theme_sr = sr
+
 
     @staticmethod
     def get_subreddit_stylesheet_url(sr):
@@ -500,7 +526,7 @@ class Reddit(Templated):
             notebar = AdminNotesSidebar('subreddit', c.site.name)
             ps.append(notebar)
 
-        if c.user.pref_show_sponsorships or not c.user.gold:
+        if not c.user.pref_hide_ads or not c.user.gold:
             ps.append(SponsorshipBox())
 
         if (isinstance(c.site, Filtered) and not
@@ -605,7 +631,7 @@ class Reddit(Templated):
                                       show_cover=True))
 
         no_ads_yet = True
-        user_disabled_ads = c.user.gold and not c.user.pref_show_adbox
+        user_disabled_ads = c.user.gold and c.user.pref_hide_ads
         sr_disabled_ads = (not isinstance(c.site, FakeSubreddit) and
             c.site.type == "gold_only" and
             c.site.hide_ads)
@@ -989,6 +1015,16 @@ class SubredditInfoBar(CachedTemplate):
         else:
             self.flair_prefs = None
 
+        self.sr_style_toggle = False
+        self.use_subreddit_style = True
+
+        if (c.user_is_loggedin and
+                (self.sr.stylesheet_url or self.sr.header) and
+                feature.is_enabled('stylesheets_everywhere')):
+            # defaults to c.user.pref_show_stylesheets if a match doesn't exist
+            self.sr_style_toggle = True
+            self.use_subreddit_style = c.user.use_subreddit_style(c.site)
+
         CachedTemplate.__init__(self)
 
     @property
@@ -1059,10 +1095,24 @@ class PrefsPage(Reddit):
         return [PageNameNav('nomenu', title = _("preferences")),
                 NavMenu(buttons, base_path = "/prefs", type="tabmenu")]
 
+
 class PrefOptions(Templated):
     """Preference form for updating language and display options"""
-    def __init__(self, done = False):
-        Templated.__init__(self, done = done)
+    def __init__(self, done=False, error_style_override=None, generic_error=None):
+        themes = []
+        use_other_theme = True
+        if feature.is_enabled('stylesheets_everywhere'):
+            for theme in StylesheetsEverywhere.get_all():
+                if theme.is_enabled:
+                    themes.append(theme)
+                if theme.id == c.user.pref_default_theme_sr:
+                    use_other_theme = False
+                    theme.checked = True
+
+        Templated.__init__(self, done=done,
+                error_style_override=error_style_override,
+                generic_error=generic_error, themes=themes, use_other_theme=use_other_theme)
+
 
 class PrefFeeds(Templated):
     pass
@@ -1337,24 +1387,24 @@ class SearchPage(BoringPage):
     searchbox = False
     extra_page_classes = ['search-page']
 
-    def __init__(self, pagename, prev_search, elapsed_time,
+    def __init__(self, pagename, prev_search,
                  search_params={},
                  simple=False, restrict_sr=False, site=None,
                  syntax=None, converted_data=None, facets={}, sort=None,
-                 recent=None,
+                 recent=None, subreddits=None,
                  *a, **kw):
         self.searchbar = SearchBar(prev_search=prev_search,
-                                   elapsed_time=elapsed_time,
                                    search_params=search_params,
                                    site=site,
                                    simple=simple, restrict_sr=restrict_sr,
                                    syntax=syntax, converted_data=converted_data,
                                    facets=facets, sort=sort, recent=recent)
+        self.subreddits = subreddits
         BoringPage.__init__(self, pagename, robots='noindex', *a, **kw)
 
     def content(self):
         return self.content_stack((self.searchbar, self.infobar,
-                                   self.nav_menu, self._content))
+                                   self.nav_menu, self.subreddits, self._content))
 
 class TakedownPage(BoringPage):
     def __init__(self, link):
@@ -1386,10 +1436,7 @@ class CommentsPanel(Templated):
 
 class CommentVisitsBox(Templated):
     def __init__(self, visits, *a, **kw):
-        self.visits = []
-        for visit in reversed(visits):
-            pretty = timesince(visit, precision=60)
-            self.visits.append(pretty)
+        self.visits = list(reversed(visits))
         Templated.__init__(self, *a, **kw)
 
 class LinkInfoPage(Reddit):
@@ -1837,13 +1884,12 @@ class SubredditsPage(Reddit):
     self.searchbar"""
     searchbox    = False
     submit_box   = False
-    def __init__(self, prev_search = '', elapsed_time = 0,
+    def __init__(self, prev_search = '',
                  title = '', loginbox = True, infotext = None, show_interestbar=False,
                  search_params = {}, *a, **kw):
         Reddit.__init__(self, title = title, loginbox = loginbox, infotext = infotext,
                         *a, **kw)
         self.searchbar = SearchBar(prev_search = prev_search,
-                                   elapsed_time = elapsed_time,
                                    header = _('search subreddits by name'),
                                    search_params = {},
                                    simple=True,
@@ -2900,17 +2946,15 @@ class SearchBar(Templated):
     Displays the previous search as well
 
     """
-    def __init__(self, header=None, prev_search='',
-                 elapsed_time=0, search_params={},
+    def __init__(self, header=None, prev_search='', search_params={},
                  simple=False, restrict_sr=False, site=None, syntax=None,
                  subreddit_search=False, converted_data=None, facets={},
                  sort=None, recent=None, **kw):
         if header is None:
-            header = _("previous search")
+            header = _("search")
         self.header = header
 
         self.prev_search  = prev_search
-        self.elapsed_time = elapsed_time
 
         Templated.__init__(self, search_params=search_params,
                            simple=simple, restrict_sr=restrict_sr,
@@ -4984,9 +5028,7 @@ class ExploreItem(Templated):
         Templated.__init__(self)
 
     def is_over18(self):
-        return (self.sr.over_18 or
-                self.link.over_18 or
-                Link._nsfw.findall(self.link.title))
+        return self.sr.over_18 or self.link.is_nsfw
 
 
 class ExploreItemListing(Templated):

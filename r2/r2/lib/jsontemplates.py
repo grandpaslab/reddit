@@ -27,8 +27,8 @@ from wrapped import Wrapped, StringTemplate, CacheStub, CachedVariable, Template
 from mako.template import Template
 from r2.config import feature
 from r2.config.extensions import get_api_subtype
-from r2.lib.filters import spaceCompress, safemarkdown
-from r2.models import Account, Report
+from r2.lib.filters import spaceCompress, safemarkdown, _force_unicode
+from r2.models import Account, Report, Trophy
 from r2.models.subreddit import SubSR
 from r2.models.token import OAuth2Scope, extra_oauth2_scope
 import time, pytz
@@ -116,15 +116,20 @@ class ThingJsonTemplate(JsonTemplate):
         res =  dict(id = thing._fullname,
                     content = thing.render(style=get_api_subtype()))
         return res
-        
+
     def raw_data(self, thing):
         """
         Complement to rendered_data.  Called when a dictionary of
         thing data attributes is to be sent across the wire.
         """
+        if hasattr(self, "_optional_data_attrs"):
+            for attr, attrv in self._optional_data_attrs.iteritems():
+                if hasattr(thing, attr):
+                    self._data_attrs_[attr] = attrv
+
         return dict((k, self.thing_attr(thing, v))
                     for k, v in self._data_attrs_.iteritems())
-            
+
     def thing_attr(self, thing, attr):
         """
         For the benefit of subclasses, to lookup attributes which may
@@ -236,6 +241,7 @@ class SubredditJsonTemplate(ThingJsonTemplate):
         user_is_contributor="is_contributor",
         user_is_moderator="is_moderator",
         user_is_subscriber="is_subscriber",
+        user_sr_theme_enabled="user_sr_style_enabled",
     )
 
     # subreddit *attributes* (right side of the equals)
@@ -300,6 +306,11 @@ class SubredditJsonTemplate(ThingJsonTemplate):
             if thing.community_rules:
                 return thing.community_rules.split('\n')
             return []
+        elif attr == 'user_sr_style_enabled':
+            if c.user_is_loggedin:
+                return c.user.use_subreddit_style(thing)
+            else:
+                return True
         else:
             return ThingJsonTemplate.thing_attr(self, thing, attr)
 
@@ -482,6 +493,9 @@ class PrefsJsonTemplate(ThingJsonTemplate):
 
 
 class LinkJsonTemplate(ThingJsonTemplate):
+    _optional_data_attrs = dict(
+        action_type="action_type",
+        )
     _data_attrs_ = ThingJsonTemplate.data_attrs(
         approved_by="approved_by",
         archived="archived",
@@ -597,6 +611,9 @@ class PromotedLinkJsonTemplate(LinkJsonTemplate):
 
 
 class CommentJsonTemplate(ThingJsonTemplate):
+    _optional_data_attrs = dict(
+        action_type="action_type",
+        )
     _data_attrs_ = ThingJsonTemplate.data_attrs(
         approved_by="approved_by",
         archived="archived",
@@ -817,6 +834,23 @@ class ListingJsonTemplate(ThingJsonTemplate):
     
     def kind(self, wrapped):
         return "Listing"
+
+
+class SearchListingJsonTemplate(ListingJsonTemplate):
+    def raw_data(self, thing):
+        data = ThingJsonTemplate.raw_data(self, thing)
+
+        def format_sr(sr, count):
+            return {'name': sr.name, 'url': sr.path, 'count': count}
+
+        facets = {}
+        if thing.subreddit_facets:
+            facets['subreddits'] = [format_sr(sr, count)
+                                    for sr, count in thing.subreddit_facets]
+        data['facets'] = facets
+
+        return data
+
 
 class UserListingJsonTemplate(ListingJsonTemplate):
     def raw_data(self, thing):
@@ -1226,6 +1260,16 @@ class KarmaListJsonTemplate(ThingJsonTemplate):
 
     def kind(self, wrapped):
         return "KarmaList"
+
+
+def get_usertrophies(user):
+    trophies = Trophy.by_account(user)
+    def visible_trophy(trophy):
+        return trophy._thing2.awardtype != 'invisible'
+    trophies = filter(visible_trophy, trophies)
+    resp = TrophyListJsonTemplate().render(trophies)
+    return resp.finalize()
+
 
 class TrophyJsonTemplate(ThingJsonTemplate):
     _data_attrs_ = dict(

@@ -335,7 +335,16 @@ def over18():
             if cookie == "1":
                 return True
             else:
-                c.cookies["over18"] = Cookie(value="", expires=DELETE)
+                delete_over18_cookie()
+
+
+def set_over18_cookie():
+    c.cookies.add("over18", "1")
+
+
+def delete_over18_cookie():
+    c.cookies["over18"] = Cookie(value="", expires=DELETE)
+
 
 def set_obey_over18():
     "querystring parameter for API to obey over18 filtering rules"
@@ -1287,6 +1296,13 @@ class MinimalController(BaseController):
     def abort403(self):
         abort(403, "forbidden")
 
+    COMMON_REDDIT_HEADERS = ", ".join((
+        "X-Ratelimit-Used",
+        "X-Ratelimit-Remaining",
+        "X-Ratelimit-Reset",
+        "X-Moose",
+    ))
+
     def check_cors(self):
         origin = request.headers.get("Origin")
         if c.cors_checked or not origin:
@@ -1308,7 +1324,7 @@ class MinimalController(BaseController):
                 "Authorization, "
             response.headers["Access-Control-Allow-Credentials"] = "false"
             response.headers['Access-Control-Expose-Headers'] = \
-                "X-Ratelimit-Used, X-Ratelimit-Remaining, X-Ratelimit-Reset"
+                self.COMMON_REDDIT_HEADERS
         else:
             action = request.environ["pylons.routes_dict"]["action_name"]
 
@@ -1430,6 +1446,27 @@ class OAuth2ResourceController(MinimalController):
             c.user.update_sr_activity(c.site)
 
         c.user_special_distinguish = c.user.special_distinguish()
+
+
+class OAuth2OnlyController(OAuth2ResourceController):
+    """Base controller for endpoints that may only be accessed via OAuth 2"""
+
+    # OAuth2 doesn't rely on ambient credentials for authentication,
+    # so CSRF prevention is unnecessary.
+    handles_csrf = True
+
+    def pre(self):
+        OAuth2ResourceController.pre(self)
+        if request.method != "OPTIONS":
+            self.authenticate_with_token()
+            self.set_up_user_context()
+            self.run_sitewide_ratelimits()
+
+    def can_use_pagecache(self):
+        return False
+
+    def on_validation_error(self, error):
+        abort_with_error(error, error.code or 400)
 
 
 class RedditController(OAuth2ResourceController):
@@ -1616,7 +1653,10 @@ class RedditController(OAuth2ResourceController):
                 self.abort404()
 
             # check if the user has access to this subreddit
-            if not c.site.can_view(c.user) and not c.error_page:
+            # Allow OPTIONS requests through, as no response body
+            # is sent in those cases - just a set of headers
+            if (not c.site.can_view(c.user) and not c.error_page and
+                    request.method != "OPTIONS"):
                 if isinstance(c.site, LabeledMulti):
                     # do not leak the existence of multis via 403.
                     self.abort404()
@@ -1650,8 +1690,18 @@ class RedditController(OAuth2ResourceController):
         #check whether to allow custom styles
         c.allow_styles = True
         c.can_apply_styles = self.allow_stylesheets
-        #if the preference is set and we're not at a cname
-        if not c.user.pref_show_stylesheets and not c.cname:
+
+        # use override stylesheet if one exists and:
+        #   this page has no custom stylesheet
+        #   or the user disabled the stylesheet for this sr (indiv or global)
+        has_style_override = (c.user.pref_default_theme_sr and
+                feature.is_enabled('stylesheets_everywhere') and
+                Subreddit._by_name(c.user.pref_default_theme_sr).can_view(c.user))
+        sr_stylesheet_enabled = c.user.use_subreddit_style(c.site)
+
+        if (not sr_stylesheet_enabled and
+                not has_style_override and
+                not c.cname):
             c.can_apply_styles = False
         #if the site has a cname, but we're not using it
         elif c.site.domain and c.site.css_on_cname and not c.cname:

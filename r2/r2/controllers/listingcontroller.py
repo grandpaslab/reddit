@@ -30,6 +30,7 @@ from r2.models import *
 from r2.models.query_cache import CachedQuery, MergedCachedQuery
 from r2.config.extensions import is_api
 from r2.lib.filters import _force_unicode
+from r2.lib.jsontemplates import get_usertrophies
 from r2.lib.pages import *
 from r2.lib.pages.things import wrap_links
 from r2.lib.menus import TimeMenu, SortMenu, RecSortMenu, ProfileSortMenu
@@ -57,6 +58,7 @@ import socket
 
 from api_docs import api_doc, api_section
 
+from pylons import g
 from pylons.i18n import _
 from pylons import g
 
@@ -340,7 +342,7 @@ class ListingWithPromos(SubredditListingController):
 
         show_promo = False
         srnames = []
-        can_show_promo = c.user.pref_show_sponsors or not c.user.gold
+        can_show_promo = not c.user.pref_hide_ads or not c.user.gold
         try_show_promo = ((c.user_is_loggedin and random.random() > 0.5) or
                           not c.user_is_loggedin)
 
@@ -381,7 +383,7 @@ class ListingWithPromos(SubredditListingController):
         # only send a spotlight listing for HTML rendering
         if c.render_style == "html":
             spotlight = None
-            show_sponsors = not (not c.user.pref_show_sponsors and c.user.gold)
+            show_sponsors = not c.user.pref_hide_ads or not c.user.gold
             show_organic = self.show_organic and c.user.pref_organic
             on_frontpage = isinstance(c.site, DefaultSR)
             requested_ad = request.GET.get('ad')
@@ -815,6 +817,7 @@ class UserController(ListingController):
                 q = queries.get_overview(self.vuser, self.sort, self.time)
             else:
                 q = queries.get_user_actions(self.vuser, 'new', 'all')
+                self.builder_cls = ActionBuilder
 
         elif c.user_is_sponsor and self.where == 'promoted':
             q = queries.get_promoted_links(self.vuser._id)
@@ -929,6 +932,15 @@ class UserController(ListingController):
         if request.query_string:
             url += "?" + request.query_string
         return self.redirect(url, code=302)
+
+    @validate(
+        user=VAccountByName('username'),
+    )
+    def GET_trophies(self, user):
+        """Return a list of trophies for the a given user."""
+        if not is_api():
+            return self.abort404()
+        return self.api_wrapper(get_usertrophies(user))
 
 
 class MessageController(ListingController):
@@ -1216,11 +1228,15 @@ class MessageController(ListingController):
             content = MessageCompose(to=to, subject=subject, captcha=captcha,
                                      message=message)
 
-        return MessagePage(content=content, title=self.title()).render()
+        return MessagePage(content=content, 
+            title=self.title(), 
+            page_classes=self.extra_page_classes + ['compose-page'],
+        ).render()
 
 
 class RedditsController(ListingController):
     render_cls = SubredditsPage
+    extra_page_classes = ListingController.extra_page_classes + ['subreddits-page']
 
     def title(self):
         return _('subreddits')
@@ -1304,6 +1320,7 @@ class RedditsController(ListingController):
 
 class MyredditsController(ListingController):
     render_cls = MySubredditsPage
+    extra_page_classes = ListingController.extra_page_classes + ['subreddits-page']
 
     @property
     def menus(self):

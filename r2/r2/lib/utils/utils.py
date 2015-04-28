@@ -32,6 +32,7 @@ import re
 import signal
 import traceback
 
+from collections import OrderedDict
 from copy import deepcopy
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -160,30 +161,47 @@ class Results():
         else:
             raise StopIteration
 
+r_base_url = re.compile("(?i)(?:.+?://)?([^#]*[^#/])/?")
+r_domain = re.compile("(?i)(?:.+?://)?([^/:#?]*)")
+r_domain_prefix = re.compile('^www\d*\.')
+
+
 def strip_www(domain):
-    if domain.count('.') >= 2 and domain.startswith("www."):
-        return domain[4:]
-    else:
-        return domain
+    stripped = domain
+    if domain.count('.') > 1:
+        prefix = r_domain_prefix.findall(domain)
+        if domain.startswith("www") and len(prefix):
+            stripped = '.'.join(domain.split('.')[1:])
+    return stripped
+
 
 def is_subdomain(subdomain, base):
     """Check if a domain is equal to or a subdomain of a base domain."""
     return subdomain == base or (subdomain is not None and subdomain.endswith('.' + base))
 
-r_base_url = re.compile("(?i)(?:.+?://)?(?:www[\d]*\.)?([^#]*[^#/])/?")
+
 def base_url(url):
     res = r_base_url.findall(url)
-    return (res and res[0]) or url
+    if res and res[0]:
+        base = strip_www(res[0])
+    else:
+        base = url
+    return base.lower()
 
-r_domain = re.compile("(?i)(?:.+?://)?(?:www[\d]*\.)?([^/:#?]*)")
-def domain(s):
+
+def domain(url):
     """
         Takes a URL and returns the domain part, minus www., if
         present
     """
-    res = r_domain.findall(s)
-    domain = (res and res[0]) or s
+    res = r_domain.findall(url)
+    host = res and res[0]
+    if host:
+        domain = strip_www(host)
+    else:
+        domain = url
     return domain.lower()
+
 
 def extract_subdomain(host=None, base_domain=None):
     """Try to extract a subdomain from the request, as compared to g.domain.
@@ -428,6 +446,7 @@ def paranoid_urlparser_method(check):
 class UrlParser(object):
     """
     Wrapper for urlparse and urlunparse for making changes to urls.
+
     All attributes present on the tuple-like object returned by
     urlparse are present on this class, and are setable, with the
     exception of netloc, which is instead treated via a getter method
@@ -435,18 +454,17 @@ class UrlParser(object):
 
     Unlike urlparse, this class allows the query parameters to be
     converted to a dictionary via the query_dict method (and
-    correspondingly updated vi update_query).  The extension of the
+    correspondingly updated via update_query).  The extension of the
     path can also be set and queried.
 
     The class also contains reddit-specific functions for setting,
     checking, and getting a path's subreddit.  It also can convert
     paths between in-frame and out of frame cname'd forms.
-
     """
 
     __slots__ = ['scheme', 'path', 'params', 'query',
                  'fragment', 'username', 'password', 'hostname', 'port',
-                 '_url_updates', '_orig_url', '_orig_netloc', '_query_dict']
+                 '_orig_url', '_orig_netloc', '_query_dict']
 
     valid_schemes = ('http', 'https', 'ftp', 'mailto')
     cname_get = "cnameframe"
@@ -456,41 +474,77 @@ class UrlParser(object):
         for s in self.__slots__:
             if hasattr(u, s):
                 setattr(self, s, getattr(u, s))
-        self._url_updates = {}
         self._orig_url    = url
         self._orig_netloc = getattr(u, 'netloc', '')
         self._query_dict  = None
 
+    def __eq__(self, other):
+        """A loose equality method for UrlParsers.
+
+        In particular, this returns true for UrlParsers whose resultant urls
+        have the same query parameters, but in a different order.  These are
+        treated the same most of the time, but if you need strict equality,
+        compare the string results of unparse().
+        """
+        if not isinstance(other, UrlParser):
+            return False
+
+        (s_scheme, s_netloc, s_path, s_params, s_query, s_fragment) = self._unparse()
+        (o_scheme, o_netloc, o_path, o_params, o_query, o_fragment) = other._unparse()
+        # Check all the parsed components for equality, except the query, which
+        # is easier to check in its pure-dictionary form.
+        if (s_scheme != o_scheme or
+                s_netloc != o_netloc or
+                s_path != o_path or
+                s_params != o_params or
+                s_fragment != o_fragment):
+            return False
+        # Coerce query dicts from OrderedDicts to standard dicts to avoid an
+        # order-sensitive comparison.
+        if dict(self.query_dict) != dict(other.query_dict):
+            return False
+
+        return True
+
     def update_query(self, **updates):
-        """
-        Can be used instead of self.query_dict.update() to add/change
-        query params in situations where the original contents are not
-        required.
-        """
-        self._url_updates.update(updates)
+        """Add or change query parameters."""
+        # Since in HTTP everything's a string, coercing values to strings now
+        # makes equality testing easier.  Python will throw an error if you try
+        # to pass in a non-string key, so that's already taken care of for us.
+        updates = {k: str(v) for k, v in updates.iteritems()}
+        self.query_dict.update(updates)
 
     @property
     def query_dict(self):
-        """
-        Parses the `params' attribute of the original urlparse and
-        generates a dictionary where both the keys and values have
-        been url_unescape'd.  Any updates or changes to the resulting
-        dict will be reflected in the updated query params
+        """A dictionary of the current query parameters.
+
+        Keys and values pulled from the original url are un-url-escaped.
+
+        Modifying this function's return value will result in changes to the
+        unparse()-d url, but it's recommended instead to make any changes via
+        `update_query()`.
         """
         if self._query_dict is None:
             def _split(param):
                 p = param.split('=')
                 return (unquote_plus(p[0]),
                         unquote_plus('='.join(p[1:])))
-            self._query_dict = dict(_split(p) for p in self.query.split('&')
-                                    if p)
+            self._query_dict = OrderedDict(
+                                 _split(p) for p in self.query.split('&') if p)
         return self._query_dict
 
     def path_extension(self):
+        """Fetches the current extension of the path.
+
+        If the url does not end in a file or the file has no extension, returns
+        an empty string.
         """
-        Fetches the current extension of the path.
-        """
-        return self.path.split('/')[-1].split('.')[-1]
+        filename = self.path.split('/')[-1]
+        filename_parts = filename.split('.')
+        if len(filename_parts) == 1:
+            return ''
+
+        return filename_parts[-1]
 
     def set_extension(self, extension):
         """
@@ -540,7 +594,7 @@ class UrlParser(object):
     def unparse(self):
         """
         Converts the url back to a string, applying all updates made
-        to the feilds thereof.
+        to the fields thereof.
 
         Note: if a host name has been added and none was present
         before, will enforce scheme -> "http" unless otherwise
@@ -548,12 +602,10 @@ class UrlParser(object):
         path, and the query string is reconstructed only if the
         query_dict has been modified/updated.
         """
-        # only parse the query params if there is an update dict
-        q = self.query
-        if self._url_updates or self._query_dict is not None:
-            q = self._query_dict or self.query_dict
-            q.update(self._url_updates)
-            q = query_string(q).lstrip('?')
+        return urlunparse(self._unparse())
+
+    def _unparse(self):
+        q = query_string(self.query_dict).lstrip('?')
 
         # make sure the port is not doubly specified
         if getattr(self, 'port', None) and ":" in self.hostname:
@@ -563,9 +615,9 @@ class UrlParser(object):
         if self.netloc and not self.scheme:
             self.scheme = "http"
 
-        return urlunparse((self.scheme, self.netloc,
-                           self.path.replace('//', '/'),
-                           self.params, q, self.fragment))
+        return (self.scheme, self.netloc,
+                self.path.replace('//', '/'),
+                self.params, q, self.fragment)
 
     def path_has_subreddit(self):
         """

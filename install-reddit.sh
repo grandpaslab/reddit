@@ -313,6 +313,9 @@ if [ ! -f development.update ]; then
 # generate a new development.ini
 
 [DEFAULT]
+# global debug flag -- displays pylons stacktrace rather than 500 page on error when true
+# WARNING: a pylons stacktrace allows remote code execution. Make sure this is false
+# if your server is publicly accessible.
 debug = true
 
 disable_ads = true
@@ -734,7 +737,7 @@ function set_consumer_count {
 }
 
 set_consumer_count log_q 0
-set_consumer_count cloudsearch_q 0
+set_consumer_count search_q 0
 set_consumer_count del_account_q 1
 set_consumer_count scraper_q 1
 set_consumer_count markread_q 1

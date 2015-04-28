@@ -98,7 +98,7 @@ def get_request_location():
                 pass
     elif getattr(request, 'ip', None):
         g.stats.simple_event('geoip.non_cdn_request')
-        timer = g.stats.get_timer("geoip_service_timer")
+        timer = g.stats.get_timer("providers.geoip.location_by_ips")
         timer.start()
         location = location_by_ips(request.ip)
         if location:
@@ -867,6 +867,8 @@ class Subreddit(Thing, Printable, BaseSite):
 
             if item.hide_subscribers and not c.user_is_admin:
                 item._ups = 0
+
+            item.score_hidden = not item.can_view(user)
 
             item.score = item._ups
 

@@ -482,7 +482,7 @@ function togglemessage(elem) {
   }
 }
 
-function morechildren(form, link_id, sort, children, depth, pv_hex) {
+function morechildren(form, link_id, sort, children, depth) {
     $(form).html(reddit.status_msg.loading)
         .css("color", "red");
     var id = $(form).parents(".thing.morechildren:first").thing_id();
@@ -492,7 +492,6 @@ function morechildren(form, link_id, sort, children, depth, pv_hex) {
         children: children,
         depth: depth,
         id: id,
-        pv_hex: pv_hex,
     };
     $.request('morechildren', child_params, undefined, undefined,
               undefined, true);
@@ -1258,6 +1257,26 @@ $(function() {
             $(this).select();
         });
 
+        $(".sr_style_toggle").change(function() {
+            $('#sr_style_throbber')
+            .html('<img src="' + r.utils.staticURL('throbber.gif') + '" />')
+            .css("display", "inline-block");
+            return post_form($(this).parent(), "set_sr_style_enabled");
+        });
+
+        $(".reddit-themes .theme").click(function() {
+          $("div.theme.selected").removeClass("selected");
+          $("input[name='enable_default_themes']").prop("checked", true);
+          // if other is selected
+          if ($(this).hasClass("select-custom-theme")) {
+            $("#other_theme_selector").prop("checked", true);
+          } else {
+            $("input[name='theme_selector'][value='" + $(this).attr("id") + "']")
+              .prop("checked", true);
+          }
+          $(this).addClass("selected");
+        });
+
         /* ajax ynbutton */
         function toggleThis() { return toggle(this); }
         $("body")
@@ -1295,18 +1314,6 @@ function show_unfriend(account_fullname) {
                 $(this).html("");
             }
         });
-}
-
-function highlight_new_comments(period) {
-  var i;
-  for (i = 0 ; i <= 9; i++) {
-    items = $(".comment-period-" + i);
-    if (period >= 0 && i >= period) {
-      items.addClass("new-comment");
-    } else {
-      items.removeClass("new-comment");
-    }
-  }
 }
 
 function save_href(link) {

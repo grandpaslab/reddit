@@ -82,6 +82,7 @@ class Account(Thing):
                      pref_min_comment_score = -4,
                      pref_num_comments = g.num_comments,
                      pref_highlight_controversial=False,
+                     pref_default_comment_sort = None,
                      pref_lang = g.lang,
                      pref_content_langs = (g.lang,),
                      pref_over_18 = False,
@@ -91,6 +92,8 @@ class Account(Thing):
                      pref_no_profanity = True,
                      pref_label_nsfw = True,
                      pref_show_stylesheets = True,
+                     pref_enable_default_themes=False,
+                     pref_default_theme_sr=None,
                      pref_show_flair = True,
                      pref_show_link_flair = True,
                      pref_mark_messages_read = True,
@@ -99,9 +102,7 @@ class Account(Thing):
                      pref_email_messages = False,
                      pref_private_feeds = True,
                      pref_force_https = False,
-                     pref_show_adbox = True,
-                     pref_show_sponsors = True, # sponsored links
-                     pref_show_sponsorships = True,
+                     pref_hide_ads = False,
                      pref_show_trending=True,
                      pref_highlight_new_comments = True,
                      pref_monitor_mentions=True,
@@ -651,6 +652,23 @@ class Account(Thing):
         except (NotFound, AttributeError):
             return None
 
+    def use_subreddit_style(self, sr):
+        """Return whether to show subreddit stylesheet depending on
+        individual selection if available, else use pref_show_stylesheets"""
+        # if FakeSubreddit, there is no stylesheet
+        if not hasattr(sr, '_id'):
+            return False
+        if not feature.is_enabled('stylesheets_everywhere'):
+            return self.pref_show_stylesheets
+        # if stylesheet isn't individually enabled/disabled, use global pref
+        return bool(getattr(self, "sr_style_%s_enabled" % sr._id,
+            self.pref_show_stylesheets))
+
+    def set_subreddit_style(self, sr, use_style):
+        if hasattr(sr, '_id'):
+            setattr(self, "sr_style_%s_enabled" % sr._id, use_style)
+            self._commit()
+
     def flair_enabled_in_sr(self, sr_id):
         return getattr(self, 'flair_%s_enabled' % sr_id, True)
 
@@ -747,6 +765,17 @@ class Account(Thing):
     def gold_will_autorenew(self):
         return (self.has_gold_subscription or
                 (self.pref_creddit_autorenew and self.gold_creddits > 0))
+
+    @property
+    def default_comment_sort(self):
+        if self.pref_default_comment_sort:
+            return self.pref_default_comment_sort
+
+        old_sort_pref = self.sort_options.get('front_sort')
+        if old_sort_pref:
+            return old_sort_pref
+
+        return 'confidence'
 
 
 class FakeAccount(Account):

@@ -23,6 +23,7 @@
 from r2.controllers.reddit_base import (
     cross_domain,
     hsts_modify_redirect,
+    is_trusted_origin,
     MinimalController,
     pagecache_policy,
     PAGECACHE_POLICY,
@@ -55,8 +56,17 @@ from r2.lib.utils import (
     tup,
 )
 
-from r2.lib.pages import (BoringPage, FormPage, CssError, UploadedImage,
-                          ClickGadget, UrlParser, WrappedUser)
+from r2.lib.pages import (
+    BoringPage,
+    ClickGadget,
+    CssError,
+    FormPage,
+    Reddit,
+    responsive,
+    UploadedImage,
+    UrlParser,
+    WrappedUser,
+)
 from r2.lib.pages import FlairList, FlairCsv, FlairTemplateEditor, \
     FlairSelector
 from r2.lib.pages import PrefApps
@@ -82,7 +92,7 @@ from r2.lib.menus import CommentSortMenu
 from r2.lib.captcha import get_iden
 from r2.lib.strings import strings
 from r2.lib.filters import _force_unicode, _force_utf8, websafe_json, websafe, spaceCompress
-from r2.lib.template_helpers import format_html
+from r2.lib.template_helpers import format_html, header_url
 from r2.lib.db import queries
 from r2.lib import media
 from r2.lib.db import tdb_cassandra
@@ -2004,7 +2014,7 @@ class ApiController(RedditController):
                            cheater=c.cheater)
 
     @require_oauth2_scope("modconfig")
-    @validatedForm(VUser(),
+    @validatedForm(VSrModerator(perms='config'),
                    VModhash(),
                    # nop is safe: handled after auth checks below
                    stylesheet_contents=nop('stylesheet_contents',
@@ -2605,6 +2615,19 @@ class ApiController(RedditController):
             if not sr.domain:
                 del kw['css_on_cname']
 
+            #notify ads if sr in a collection changes over_18 to true
+            if kw.get('over_18', False) and not sr.over_18:
+                collections = []
+                for collection in Collection.get_all():
+                    if (sr.name in collection.sr_names
+                            and not collection.over_18):
+                        collections.append(collection.name)
+
+                if collections:
+                    msg = "%s now NSFW, in collection(s) %s"
+                    msg %= (sr.name, ', '.join(collections))
+                    emailer.sales_email(msg)
+
             # do not clobber these fields if absent in request
             no_clobber = ('community_rules', 'key_color', 'related_subreddits')
 
@@ -2881,10 +2904,12 @@ class ApiController(RedditController):
         return {'categories': categories}
 
     @require_oauth2_scope("save")
-    @noresponse(VUser(),
-                VModhash(),
-                category = VSavedCategory('category'),
-                thing = VByName('id'))
+    @noresponse(
+        VUser(),
+        VModhash(),
+        category=VSavedCategory('category'),
+        thing=VByName('id'),
+    )
     @api_doc(api_section.links_and_comments)
     def POST_save(self, thing, category):
         """Save a link or comment.
@@ -2894,17 +2919,23 @@ class ApiController(RedditController):
         See also: [/api/unsave](#POST_api_unsave).
 
         """
-        if not thing: return
+        if not thing or not isinstance(thing, (Link, Comment)):
+            abort(400)
+
         if category and not c.user.gold:
             category = None
+
         if ('BAD_SAVE_CATEGORY', 'category') in c.errors:
             abort(403)
+
         thing._save(c.user, category=category)
 
     @require_oauth2_scope("save")
-    @noresponse(VUser(),
-                VModhash(),
-                thing = VByName('id'))
+    @noresponse(
+        VUser(),
+        VModhash(),
+        thing=VByName('id'),
+    )
     @api_doc(api_section.links_and_comments)
     def POST_unsave(self, thing):
         """Unsave a link or comment.
@@ -2914,7 +2945,9 @@ class ApiController(RedditController):
         See also: [/api/save](#POST_api_save).
 
         """
-        if not thing: return
+        if not thing or not isinstance(thing, (Link, Comment)):
+            abort(400)
+
         thing._unsave(c.user)
 
     def collapse_handler(self, things, collapse):
@@ -3046,16 +3079,12 @@ class ApiController(RedditController):
         link=VByName('link_id'),
         sort=VMenu('morechildren', CommentSortMenu, remember=False),
         children=VCommentIDs('children'),
-        pv_hex=VPrintable(
-            "pv_hex", 40,
-            docs={"pv_hex": "(optional) a previous-visits token"}),
         mc_id=nop(
             "id",
             docs={"id": "(optional) id of the associated MoreChildren object"}),
     )
     @api_doc(api_section.links_and_comments)
-    def GET_morechildren(self, form, jquery, link, sort, children,
-                          pv_hex, mc_id):
+    def GET_morechildren(self, form, jquery, link, sort, children, mc_id):
         """Retrieve additional comments omitted from a base comment tree.
 
         When a comment tree is rendered, the most relevant comments are
@@ -3070,9 +3099,6 @@ class ApiController(RedditController):
         If `id` is passed, it should be the ID of the MoreComments object this
         call is replacing. This is needed only for the HTML UI's purposes and
         is optional otherwise.
-
-        `pv_hex` is part of the reddit gold "previous visits" feature. It is
-        optional and deprecated.
 
         **NOTE:** you may only make one request at a time to this API endpoint.
         Higher concurrency will result in an error being returned.
@@ -3093,9 +3119,6 @@ class ApiController(RedditController):
         try:
             if not link or not link.subreddit_slow.can_view(c.user):
                 return abort(403,'forbidden')
-
-            if pv_hex:
-                c.previous_visits = g.cache.get(pv_hex)
 
             if children:
                 builder = CommentBuilder(link, CommentSortMenu.operator(sort),
@@ -3128,9 +3151,6 @@ class ApiController(RedditController):
                 # morechildren link
                 jquery.things(str(mc_id)).remove()
                 jquery.insert_things(a, append = True)
-
-                if pv_hex:
-                    jquery.rehighlight_new_comments()
         finally:
             if lock:
                 lock.release()
@@ -3789,6 +3809,39 @@ class ApiController(RedditController):
             jquery('#flairrow_%s input[name="css_class"]' % user._id36).data(
                 'saved', css_class).val(css_class)
 
+    @validatedForm(
+        VUser(),
+        VModhash(),
+        sr_style_enabled=VBoolean("sr_style_enabled")
+    )
+    def POST_set_sr_style_enabled(self, form, jquery, sr_style_enabled):
+        """Update enabling of individual sr themes; refresh the page style"""
+        if feature.is_enabled('stylesheets_everywhere'):
+            c.user.set_subreddit_style(c.site, sr_style_enabled)
+            c.can_apply_styles = True
+            sr = DefaultSR()
+
+            if sr_style_enabled:
+                sr = c.site
+            elif (c.user.pref_default_theme_sr and
+                    feature.is_enabled('stylesheets_everywhere')):
+                sr = Subreddit._by_name(c.user.pref_default_theme_sr)
+                if (not sr.can_view(c.user) or
+                        not c.user.pref_enable_default_themes):
+                    sr = DefaultSR()
+            sr_stylesheet_url = Reddit.get_subreddit_stylesheet_url(sr)
+            if not sr_stylesheet_url:
+                sr_stylesheet_url = ""
+                c.can_apply_styles = False
+
+            jquery.apply_stylesheet_url(sr_stylesheet_url, sr_style_enabled)
+
+            if not sr.header or header_url(sr.header) == g.default_header_url:
+                jquery.remove_header_image();
+            else:
+                jquery.apply_header_image(header_url(sr.header),
+                    sr.header_size, sr.header_title)
+
     @validatedForm(secret_used=VAdminOrAdminSecret("secret"),
                    award=VByName("fullname"),
                    description=VLength("description", max_length=1000),
@@ -3924,6 +3977,9 @@ class ApiController(RedditController):
 
         If `exact` is true, only an exact match will be returned.
         """
+        if query:
+            query = sr_path_rx.sub('\g<name>', query.strip())
+
         names = []
         if query and exact:
             try:
@@ -4085,7 +4141,7 @@ class ApiController(RedditController):
         exclude = Subreddit.default_subreddits()
 
         faceting = {"reddit":{"sort":"-sum(text_relevance)", "count":20}}
-        results = g.search.SearchQuery(query, sort="relevance", faceting=faceting,
+        results = g.search.SearchQuery(query, sort="relevance", faceting=faceting, num=0,
                               syntax="plain").run()
 
         sr_results = []
@@ -4305,9 +4361,22 @@ class ApiController(RedditController):
 
         update_blob(str(code), updates)
 
+    def OPTIONS_request_promo(self):
+        """Send CORS headers for request_promo requests."""
+        if "Origin" in request.headers:
+            origin = request.headers["Origin"]
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            response.headers["Access-Control-Allow-Methods"] = "POST"
+            response.headers["Access-Control-Allow-Headers"] = "Authorization, "
+            response.headers["Access-Control-Allow-Credentials"] = "false"
+            response.headers['Access-Control-Expose-Headers'] = \
+                self.COMMON_REDDIT_HEADERS
+
     @csrf_exempt
     @validate(srnames=VPrintable("srnames", max_length=2100))
     def POST_request_promo(self, srnames):
+        self.OPTIONS_request_promo()
+
         if not srnames:
             return
 
@@ -4329,7 +4398,7 @@ class ApiController(RedditController):
         if listing.things:
             w = listing.things[0]
             w.num = ""
-            return spaceCompress(w.render())
+            return responsive(w.render(), space_compress=True)
 
     @json_validate(
         VUser(),

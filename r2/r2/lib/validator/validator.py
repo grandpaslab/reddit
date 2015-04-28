@@ -38,6 +38,7 @@ from r2.lib.souptest import SoupError, SoupUnsupportedEntityError
 from r2.lib.template_helpers import add_sr
 from r2.lib.jsonresponse import JQueryResponse, JsonResponse
 from r2.lib.log import log_text
+from r2.lib.menus import CommentSortMenu
 from r2.lib.permissions import ModeratorPermissionSet
 from r2.models import *
 from r2.models.promo import Location
@@ -688,6 +689,8 @@ class VSubredditName(VRequired):
         self.allow_language_srs = allow_language_srs
 
     def run(self, name):
+        if name:
+            name = sr_path_rx.sub('\g<name>', name.strip())
         valid_name = Subreddit.is_valid_name(
             name, allow_language_srs=self.allow_language_srs)
         if not valid_name:
@@ -712,10 +715,16 @@ class VAvailableSubredditName(VSubredditName):
 
 
 class VSRByName(Validator):
+    def __init__(self, sr_name, required=True):
+        self.required = required
+        Validator.__init__(self, sr_name)
+
     def run(self, sr_name):
         if not sr_name:
-            self.set_error(errors.BAD_SR_NAME, code=400)
+            if self.required:
+                self.set_error(errors.BAD_SR_NAME, code=400)
         else:
+            sr_name = sr_path_rx.sub('\g<name>', sr_name.strip())
             try:
                 sr = Subreddit._by_name(sr_name)
                 return sr
@@ -741,7 +750,8 @@ class VSRByNames(Validator):
 
     def run(self, sr_names_csv):
         if sr_names_csv:
-            sr_names = [s.strip() for s in sr_names_csv.split(',')]
+            sr_names = [sr_path_rx.sub('\g<name>', s.strip())
+                        for s in sr_names_csv.split(',')]
             return Subreddit._by_name(sr_names)
         elif self.required:
             self.set_error(errors.BAD_SR_NAME, code=400)
@@ -1230,7 +1240,8 @@ class VSubmitSR(Validator):
             return None
 
         try:
-            sr = Subreddit._by_name(str(sr_name).strip())
+            sr_name = sr_path_rx.sub('\g<name>', str(sr_name).strip())
+            sr = Subreddit._by_name(sr_name)
         except (NotFound, AttributeError, UnicodeEncodeError):
             self.set_error(errors.SUBREDDIT_NOEXIST)
             return
@@ -1756,7 +1767,6 @@ class VColor(Validator):
 
 
 class VMenu(Validator):
-
     def __init__(self, param, menu_cls, remember = True, **kw):
         self.nav = menu_cls
         self.remember = remember
@@ -1792,6 +1802,34 @@ class VMenu(Validator):
             self.param[0]: 'one of (%s)' % ', '.join("`%s`" % s
                                                   for s in self.nav._options),
         }
+
+
+class VTransitionaryMenu(VMenu):
+    """A temporary version of VMenu helping to transition to a new preference."""
+    def __init__(self, param):
+        # Our logic down below only makes sense for comment sorts, so let's
+        # hard-code that in as the menu.
+        VMenu.__init__(self, param, CommentSortMenu, remember=False)
+
+    def run(self, sort, where):
+        old_user_pref = c.user.sort_options.get('front_sort')
+        new_user_pref = c.user.pref_default_comment_sort
+
+        if c.user_is_loggedin and old_user_pref != new_user_pref:
+            # Even on view, if we catch an inconsistency between the
+            # preferences, we want to update them to match.  This allows us to
+            # transition over to the new one without having to wait for people
+            # to change their sort.
+            c.user.pref_default_comment_sort = old_user_pref
+            c.user._commit()
+
+            g.stats.simple_event('default_comment_sort.synchronized')
+
+        # Was a valid sort provided?
+        if sort not in self.nav._options:
+            sort = c.user.default_comment_sort # Includes fallbacks
+
+        return sort
 
 
 class VRatelimit(Validator):

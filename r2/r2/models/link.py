@@ -65,6 +65,10 @@ import simplejson as json
 import random, re
 from collections import defaultdict
 from pycassa.cassandra.ttypes import NotFoundException
+from pycassa.system_manager import (
+    ASCII_TYPE,
+    DOUBLE_TYPE,
+)
 import pytz
 
 NOTIFICATION_EMAIL_DELAY = timedelta(hours=1)
@@ -89,6 +93,7 @@ class Link(Thing, Printable):
                      gifts_embed_url=None,
                      media_autoplay=False,
                      domain_override=None,
+                     third_party_tracking=None,
                      promoted=None,
                      payment_flagged_reason="",
                      fraud=None,
@@ -123,6 +128,10 @@ class Link(Thing, Printable):
     @property
     def has_thumbnail(self):
         return self._t.get('has_thumbnail', hasattr(self, 'thumbnail_url'))
+
+    @property
+    def is_nsfw(self):
+        return self.over_18 or bool(self._nsfw.search(self.title))
 
     @classmethod
     def _by_url(cls, url, sr):
@@ -1297,7 +1306,7 @@ class Comment(Thing, Printable):
 
             item.editted = getattr(item, "editted", False)
 
-            item.render_css_class = "comment %s" % CachedVariable("time_period")
+            item.render_css_class = "comment"
 
             #will get updated in builder
             item.num_children = 0
@@ -1368,6 +1377,40 @@ class CommentSortsCache(tdb_cassandra.View):
     _read_consistency_level = tdb_cassandra.CL.ONE
     _fetch_all_columns = True
 
+
+class CommentScoresByLink(tdb_cassandra.View):
+    _use_db = True
+    _connection_pool = 'main'
+    _read_consistency_level = tdb_cassandra.CL.ONE
+    _fetch_all_columns = True
+
+    _extra_schema_creation_args = {
+        "column_name_class": ASCII_TYPE,
+        "default_validation_class": DOUBLE_TYPE,
+        "key_validation_class": ASCII_TYPE,
+    }
+    _value_type = "bytes"
+    _compare_with = ASCII_TYPE
+
+    @classmethod
+    def _rowkey(cls, link, sort):
+        assert sort.startswith('_')
+        return '%s%s' % (link._id36, sort)
+
+    @classmethod
+    def set_scores(cls, link, sort, scores_by_comment):
+        rowkey = cls._rowkey(link, sort)
+        cls._set_values(rowkey, scores_by_comment)
+
+    @classmethod
+    def get_scores(cls, link, sort):
+        rowkey = cls._rowkey(link, sort)
+        try:
+            return CommentScoresByLink._byID(rowkey)._values()
+        except tdb_cassandra.NotFound:
+            return {}
+
+
 class StarkComment(Comment):
     """Render class for the comments in the top-comments display in
        the reddit toolbar"""
@@ -1434,8 +1477,6 @@ class MoreComments(Printable):
         return False
 
     def __init__(self, link, depth, parent_id=None):
-        from r2.lib.wrapped import CachedVariable
-
         if parent_id is not None:
             id36 = utils.to36(parent_id)
             self.parent_id = parent_id
@@ -1446,7 +1487,6 @@ class MoreComments(Printable):
         self.depth = depth
         self.children = []
         self.count = 0
-        self.previous_visits_hex = CachedVariable("previous_visits_hex")
 
     @property
     def _fullname(self):

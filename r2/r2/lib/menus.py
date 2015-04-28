@@ -20,7 +20,7 @@
 # Inc. All Rights Reserved.
 ###############################################################################
 
-from pylons import g, c, request
+from pylons import c, g, request
 from pylons.i18n import _, N_
 
 from r2.config import feature
@@ -63,11 +63,11 @@ menu =   MenuHandler(hot          = _('hot'),
                      admin        = _('admin'), 
                                  
                      # time sort words
-                     hour         = _('this hour'),
-                     day          = _('today'),
-                     week         = _('this week'),
-                     month        = _('this month'),
-                     year         = _('this year'),
+                     hour         = _('past hour'),
+                     day          = _('past 24 hours'),
+                     week         = _('past week'),
+                     month        = _('past month'),
+                     year         = _('past year'),
                      all          = _('all time'),
                                   
                      # "kind" words
@@ -574,7 +574,6 @@ class CommentSortMenu(SortMenu):
     _default = 'confidence'
     _options = ('confidence', 'top', 'new', 'hot', 'controversial', 'old',
                  'random', 'qa',)
-    button_cls = PostButton
 
     # Links may have a suggested sort of 'blank', which is an explicit None -
     # that is, do not check the subreddit for a suggested sort, either.
@@ -605,6 +604,17 @@ class CommentSortMenu(SortMenu):
 
 class SearchSortMenu(SortMenu):
     """Sort menu for search pages."""
+    _default = 'relevance'
+    mapping = g.search.sorts
+    _options = mapping.keys()
+
+    @classmethod
+    def operator(cls, sort):
+        return cls.mapping.get(sort, cls.mapping[cls.default])
+
+
+class SubredditSearchSortMenu(SortMenu):
+    """Sort menu for subreddit search pages."""
     _default = 'relevance'
     mapping = g.search.sorts
     _options = mapping.keys()
@@ -677,3 +687,4 @@ class AdminTimeMenu(TimeMenu):
     get_param = 't'
     _default = 'day'
     _options = ('hour', 'day', 'week')
+

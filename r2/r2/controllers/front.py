@@ -36,7 +36,7 @@ from r2 import config
 from r2.models import *
 from r2.models.recommend import ExploreSettings
 from r2.config import feature
-from r2.config.extensions import is_api
+from r2.config.extensions import is_api, API_TYPES, RSS_TYPES
 from r2.lib import hooks, recommender, embeds, pages
 from r2.lib.pages import *
 from r2.lib.pages.things import hot_links_by_url_listing
@@ -188,25 +188,13 @@ class FrontController(RedditController):
             abort(403, 'forbidden')
         return self.abort404()
 
-    @csrf_exempt
-    @validate(article=VLink('article'),
-              comment=VCommentID('comment'),
-              context=VInt('context', min=0, max=8),
-              sort=VMenu('controller', CommentSortMenu),
-              limit=VInt('limit'),
-              depth=VInt('depth'))
-    def POST_comments(self, article, comment, context, sort, limit, depth):
-        # VMenu validator will save the value of sort before we reach this
-        # point. Now just redirect to GET mode.
-        return self.redirect(request.fullpath + query_string(dict(sort=sort)))
-
     @require_oauth2_scope("read")
     @validate(article=VLink('article',
                   docs={"article": "ID36 of a link"}),
               comment=VCommentID('comment',
                   docs={"comment": "(optional) ID36 of a comment"}),
               context=VInt('context', min=0, max=8),
-              sort=VMenu('controller', CommentSortMenu),
+              sort=VTransitionaryMenu('controller'),
               limit=VInt('limit',
                   docs={"limit": "(optional) an integer"}),
               depth=VInt('depth',
@@ -235,6 +223,8 @@ class FrontController(RedditController):
         [/api/comment](#POST_api_comment).
 
         """
+        if not sort:
+            sort = c.user.pref_default_comment_sort
         if comment and comment.link_id != article._id:
             return self.abort404()
 
@@ -250,16 +240,20 @@ class FrontController(RedditController):
         if not can_view_link_comments(article):
             abort(403, 'forbidden')
 
+        # check over 18
+        if article.is_nsfw and not c.over18 and c.render_style == 'html':
+            return self.intermediate_redirect("/over18", sr_path=False)
+
         # Determine if we should show the embed link for comments
         c.can_embed = feature.is_enabled("comment_embeds") and bool(comment)
 
-        embed_key = embeds.prepare_embed_request(sr)
+        is_embed = embeds.prepare_embed_request(sr)
 
         # check for 304
         self.check_modified(article, 'comments')
 
-        if embed_key:
-            embeds.set_up_embed(embed_key, sr, comment, showedits=showedits)
+        if is_embed:
+            embeds.set_up_embed(sr, comment, showedits=showedits)
 
         # Temporary hook until IAMA app "OP filter" is moved from partners
         # Not to be open-sourced
@@ -363,13 +357,6 @@ class FrontController(RedditController):
 
         if previous_visits:
             displayPane.append(CommentVisitsBox(previous_visits))
-            # Used in later "more comments" renderings
-            pv_hex = md5(repr(previous_visits)).hexdigest()
-            g.cache.set(pv_hex, previous_visits, time=g.comment_visits_period)
-            c.previous_visits_hex = pv_hex
-
-        # Used in template_helpers
-        c.previous_visits = previous_visits
 
         if c.site.allows_referrers:
             c.referrer_policy = "always"
@@ -378,12 +365,16 @@ class FrontController(RedditController):
         suggested_sort = article.sort_if_suggested() if feature.is_enabled('default_sort') else None
         if article.contest_mode:
             if c.user_is_loggedin and sr.is_moderator(c.user):
-                sort = "top"
+                # Default to top for contest mode to make determining winners
+                # easier, but allow them to override it for moderation
+                # purposes.
+                if 'sort' not in request.params:
+                    sort = "top"
             else:
                 sort = "random"
         elif suggested_sort and 'sort' not in request.params:
-                sort = suggested_sort
-                suggested_sort_active = True
+            sort = suggested_sort
+            suggested_sort_active = True
 
         # finally add the comment listing
         displayPane.append(CommentPane(article, CommentSortMenu.operator(sort),
@@ -566,6 +557,16 @@ class FrontController(RedditController):
             mod = mods[mod_id]
             mod_buttons.append(QueryButton(mod.name, mod.name,
                                            query_param='mod'))
+        # add a choice for the automoderator account if it's not a mod
+        if (g.automoderator_account and
+                all(mod.name != g.automoderator_account
+                    for mod in mods.values())):
+            automod_button = QueryButton(
+                g.automoderator_account,
+                g.automoderator_account,
+                query_param="mod",
+            )
+            mod_buttons.append(automod_button)
         mod_buttons.append(QueryButton(_('admins*'), 'a', query_param='mod'))
         base_path = request.path
         menus = [NavMenu(action_buttons, base_path=base_path,
@@ -841,12 +842,10 @@ class FrontController(RedditController):
 
         query = self.related_replace_regex.sub(self.related_replace_with,
                                                article.title)
-
         rel_range = timedelta(days=3)
         start = int(time.mktime((article._date - rel_range).utctimetuple()))
         end = int(timemktime((article._date + rel_range).utctimetuple()))
-        nsfw = True if not (article.over_18 or article._nsfw.findall(article.title)) else False
-
+        nsfw = not bool(article.over_18 or article._nsfw.findall(article.title))                         
         q = g.search.get_related_query(query, article, start, end, nsfw)
 
         pane = self._search(q, num=num, after=after, reverse=reverse,
@@ -893,15 +892,34 @@ class FrontController(RedditController):
     @api_doc(api_section.subreddits, uri='/subreddits/search', supports_rss=True)
     def GET_search_reddits(self, query, reverse, after, count, num):
         """Search subreddits by title and description."""
-        q = g.search.SubredditSearchQuery(query)
 
-        results, etime, spane = self._search(q, num=num, reverse=reverse,
-                                             after=after, count=count,
-                                             skip_deleted_authors=False)
+        # do not officially expose sort api yet
+        vsort = VMenu('sort', SubredditSearchSortMenu, remember=False)
+        sort = vsort.run(request.GET.get('sort'), '')
 
-        res = SubredditsPage(content=spane,
+        # show NSFW to API and RSS users unless obey_over18=true
+        is_api_or_rss = (c.render_style in API_TYPES
+                         or c.render_style in RSS_TYPES)
+        if is_api_or_rss:
+            include_over18 = not c.obey_over18 or c.over18
+        elif feature.is_enabled('safe_search'):
+            include_over18 = c.over18
+        else:
+            include_over18 = True
+
+        if feature.is_enabled('subreddit_relevancy') and sort == 'relevance':
+            sort = 'rel1'
+
+        q = g.search.SubredditSearchQuery(query, sort=sort, faceting={},
+                                 include_over18=include_over18)
+        content = self._search(q, num=num, reverse=reverse,
+                               after=after, count=count,
+                               skip_deleted_authors=False)
+
+        res = SubredditsPage(content=content,
                              prev_search=query,
                              elapsed_time=etime,
+                             page_classes=['subreddits-page'],
                              # update if we ever add sorts
                              search_params={},
                              title=_("search results"),
@@ -916,10 +934,11 @@ class FrontController(RedditController):
               sort=VMenu('sort', SearchSortMenu, remember=False),
               recent=VMenu('t', TimeMenu, remember=False),
               restrict_sr=VBoolean('restrict_sr', default=False),
+              include_facets=VBoolean('include_facets', default=False),
               syntax=VOneOf('syntax', options=g.search.SearchQuery.known_syntaxes))
     @api_doc(api_section.search, supports_rss=True, uses_site=True)
     def GET_search(self, query, num, reverse, after, count, sort, recent,
-                   restrict_sr, syntax):
+                   restrict_sr, include_facets, syntax):
         """Search links page."""
         if query and '.' in query:
             url = sanitize_url(query, require_scheme=True)
@@ -934,15 +953,55 @@ class FrontController(RedditController):
         if not syntax:
             syntax = g.search.SearchQuery.default_syntax
 
-        try:
-            cleanup_message = None
+        # show NSFW to API and RSS users unless obey_over18=true
+        is_api_or_rss = (c.render_style in API_TYPES
+                         or c.render_style in RSS_TYPES)
+        if is_api_or_rss:
+            include_over18 = not c.obey_over18 or c.over18
+        elif feature.is_enabled('safe_search'):
+            include_over18 = c.over18
+        else:
+            include_over18 = True
+
+        # do not request facets for api requests, unless specifically requested
+        if is_api():
+            faceting = None if include_facets else {}
+        else:
+            faceting = None
+
+        result_type = request.GET.get('type')
+        sr_num = 0
+
+        # combined results on first page only, html site only
+        if c.render_style == 'html' and feature.is_enabled('subreddit_search'):
+            if after is None and not restrict_sr and not result_type:
+                # hardcoded to 5 subreddits (or fewer)
+                sr_num = min(5, int(num / 5))
+                num = num - sr_num
+            elif result_type == 'sr':
+                sr_num = num
+                num = 0
+                restrict_sr = False
+
+        content = None
+        subreddits = None
+        cleanup_message = None
+        converted_data = None
+        subreddit_facets = None
+
+        if num > 0:
             try:
-                q = g.search.SearchQuery(query, site, sort,
+                q = g.search.SearchQuery(query, site, sort=sort, faceting=faceting,
+                                include_over18=include_over18,
                                 recent=recent, syntax=syntax)
-                results, etime, spane = self._search(q, num=num, after=after,
-                                                     reverse=reverse,
-                                                     count=count)
+                content = self._search(q, num=num, after=after, reverse=reverse,
+                                       count=count)
+                converted_data = q.converted_data
+                subreddit_facets = content.subreddit_facets
+
             except g.search.InvalidQuery:
+                g.stats.simple_event('cloudsearch.error.invalidquery')
+
                 # Clean the search of characters that might be causing the
                 # InvalidQuery exception. If the cleaned search boils down
                 # to an empty string, the search code is expected to bail
@@ -950,11 +1009,13 @@ class FrontController(RedditController):
                 cleaned = re.sub("[^\w\s]+", " ", query)
                 cleaned = cleaned.lower().strip()
 
-                q = g.search.SearchQuery(cleaned, site, sort, recent=recent)
-                results, etime, spane = self._search(q, num=num,
-                                                     after=after,
-                                                     reverse=reverse,
-                                                     count=count)
+                q = g.search.SearchQuery(cleaned, site, sort=sort, faceting=faceting,
+                                include_over18=include_over18,
+                                recent=recent)
+                content = self._search(q, num=num, after=after, reverse=reverse,
+                                       count=count)
+                converted_data = q.converted_data
+                subreddit_facets = content.subreddit_facets
                 if cleaned:
                     cleanup_message = strings.invalid_search_query % {
                                                         "clean_query": cleaned
@@ -966,27 +1027,37 @@ class FrontController(RedditController):
                 else:
                     cleanup_message = strings.completely_invalid_search_query
 
-            check_cheating("search")
-            res = SearchPage(_('search results'), query, etime,
-                             content=spane,
-                             nav_menus=[SearchSortMenu(default=sort),
-                                        TimeMenu(default=recent)],
-                             search_params=dict(sort=sort, t=recent),
-                             infotext=cleanup_message,
-                             simple=False, site=c.site,
-                             restrict_sr=restrict_sr,
-                             syntax=syntax,
-                             converted_data=q.converted_data,
-                             facets=results.subreddit_facets,
-                             sort=sort,
-                             recent=recent,
-                             ).render()
+        # extra search request for subreddit results
+        if sr_num > 0:
+            sr_q = SubredditSearchQuery(query, sort='relevance', faceting={},
+                                        include_over18=include_over18)
+            subreddits = self._search(sr_q, num=sr_num, reverse=reverse,
+                                      after=after, count=count, type='sr',
+                                      skip_deleted_authors=False)
+            if is_api() and not content:
+                content = subreddits
+                subreddits = None
 
-            return res
-        except g.search.SearchException + (socket.error,) as e:
-            return self.search_fail(e)
+        check_cheating("search")
+        res = SearchPage(_('search results'), query,
+                         content=content,
+                         subreddits=subreddits,
+                         nav_menus=[SearchSortMenu(default=sort),
+                                    TimeMenu(default=recent)],
+                         search_params=dict(sort=sort, t=recent),
+                         infotext=cleanup_message,
+                         simple=False, site=c.site,
+                         restrict_sr=restrict_sr,
+                         syntax=syntax,
+                         converted_data=converted_data,
+                         facets=subreddit_facets,
+                         sort=sort,
+                         recent=recent,
+                         ).render()
 
-    def _search(self, query_obj, num, after, reverse, count=0,
+        return res
+
+    def _search(self, query_obj, num, after, reverse, count=0, type=None,
                 skip_deleted_authors=True):
         """Helper function for interfacing with search.  Basically a
            thin wrapper for SearchBuilder."""
@@ -1000,17 +1071,18 @@ class FrontController(RedditController):
             g.stats.event_count("listing.invalid_after", "search")
             self.abort403()
 
-        listing = LinkListing(builder, show_nums=True)
+        params = request.GET.copy()
+        if type:
+            params['type'] = type
 
-        # have to do it in two steps since total_num and timing are only
-        # computed after fetch_more
+        listing = SearchListing(builder, show_nums=True, params=params)
+
         try:
             res = listing.listing()
         except g.search.SearchException + (socket.error,) as e:
             return self.search_fail(e)
-        timing = time_module.time() - builder.start_time
 
-        return builder.results, timing, res
+        return res
 
     @validate(VAdmin(),
               comment=VCommentByID('comment_id'))
@@ -1217,7 +1289,7 @@ class FrontController(RedditController):
                           "check the details by signing into your account "
                           "at:")
             vendor_url = "https://www.paypal.com/us"
-        elif vendor in {"coinbase", "stripe"}:  # Pending vendors
+        elif vendor in ["coinbase", "stripe"]:  # Pending vendors
             claim_msg = _("Thanks for buying reddit gold! Your transaction is "
                           "being processed. If you have any questions please "
                           "email us at %(gold_email)s")
@@ -1409,7 +1481,11 @@ class FormsController(RedditController):
         content = None
         infotext = None
         if not location or location == 'options':
-            content = PrefOptions(done=request.GET.get('done'))
+            content = PrefOptions(
+                done=request.GET.get('done'),
+                error_style_override=request.GET.get('error_style_override'),
+                generic_error=request.GET.get('generic_error'),
+            )
         elif location == 'update':
             if verified:
                 infotext = strings.email_verified

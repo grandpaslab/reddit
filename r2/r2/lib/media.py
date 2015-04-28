@@ -72,6 +72,7 @@ _SECURE_SERVICES = [
     "soundcloud",
     "wistia",
     "slideshare",
+    "vine",
 ]
 
 EMBEDLY_API_URL = "https://api.embed.ly/1/oembed"
@@ -282,8 +283,6 @@ def _scrape_media(url, autoplay=False, maxwidth=600, force=False,
             media = mediaByURL.media
 
     # Otherwise, scrape it
-    import pdb
-    pdb.set_trace()
     if not media or not media.media_object or not media.thumbnail_url:
         g.log.warning("not_media==True")
         media_object = secure_media_object = None
@@ -331,7 +330,6 @@ def _scrape_media(url, autoplay=False, maxwidth=600, force=False,
 
 
 def _set_media(link, force=False, **kwargs):
-    g.log.warning("set_media")
     if link.is_self:
         return
     if not force and link.promoted:
@@ -442,7 +440,6 @@ def _make_thumbnail_from_url(thumbnail_url, referer):
 class Scraper(object):
     @classmethod
     def for_url(cls, url, autoplay=False, maxwidth=600):
-        g.log.warning("for_url")
         scraper = hooks.get_hook("scraper.factory").call_until_return(url=url)
         if scraper:
             return scraper
@@ -672,13 +669,11 @@ def _fetch_embedly_services():
 def run():
     @g.stats.amqp_processor('scraper_q')
     def process_link(msg):
-        g.log.warning("process_link")
         fname = msg.body
         link = Link._by_fullname(msg.body, data=True)
 
         try:
-            #XXX set timeout back to 30 seconds!
-            TimeoutFunction(_set_media, 3600)(link, use_cache=True)
+            TimeoutFunction(_set_media, 30)(link, use_cache=True)
         except TimeoutFunctionException:
             print "Timed out on %s" % fname
         except KeyboardInterrupt:

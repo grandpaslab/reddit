@@ -689,11 +689,52 @@ $.apply_stylesheet = function(cssText) {
     
 };
 
-$.rehighlight_new_comments = function() {
-  checked = $(".comment-visits-box input:checked");
-  if (checked.length > 0) {
-    var v = checked[0].value;
-    highlight_new_comments(v);
+$.apply_stylesheet_url = function(cssUrl, srStyleEnabled) {
+  var sheetTitle = 'applied_subreddit_stylesheet';
+  var $stylesheet = $('link[title="' + sheetTitle + '"]');
+  if ($stylesheet.length == 0) {
+    $('head').append('<link type="text/css" title="' + sheetTitle + '" rel="stylesheet">');
+    $stylesheet = $('link[title="' + sheetTitle + '"]');
+  }
+
+  $stylesheet.attr("href", cssUrl);
+  $("#sr_style_enabled").prop("checked", srStyleEnabled);
+  $("#sr_style_throbber")
+    .html("")
+    .css("display", "none");
+};
+
+$.apply_header_image = function(src, size, title) {
+  var $headerImage = $("#header-img");
+  if ($headerImage.is("a")) {
+    $headerImage
+      .attr("id", "header-img-a")
+      .text("")
+      .append('<img id="header-img"/>');
+    $headerImage = $("#header-img");
+  }
+  $headerImage.removeClass("default-header");
+  $headerImage.attr("src", src);
+  $headerImage.attr("title", title);
+  if (size) {
+    $headerImage.attr("width", size[0]);
+    $headerImage.attr("height", size[1]);
+  } else {
+    $headerImage.removeAttr("width");
+    $headerImage.removeAttr("height");
+  }
+}
+
+$.remove_header_image = function() {
+  var $headerLink = $("#header-img-a");
+
+  if ($headerLink) {
+    $headerLink
+      .addClass("default-header")
+      .attr("id", "header-img")
+      .empty();
+    $("#header-img").empty();
+    $headerLink.attr("id", "header-img");
   }
 }
 

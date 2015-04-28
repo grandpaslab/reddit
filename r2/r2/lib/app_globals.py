@@ -954,4 +954,4 @@ class Globals(object):
             "r2.provider.search",
             self.search_provider,
         ))
-        return  self.search_provider_    
+        return  self.search_provider_        
